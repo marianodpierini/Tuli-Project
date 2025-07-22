@@ -1,0 +1,56 @@
+name: Deploy Lambdas
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-chatbot:
+    name: Deploy Chatbot Lambda
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Instalar dependencias Chatbot
+        run: |
+          cd "lambda chatbot"
+          mkdir -p package
+          pip install -r requirements.txt -t package/ || echo "No hay requirements.txt"
+          cp -r *.py core package/
+          cd package && zip -r ../chatbot_lambda.zip .
+
+      - name: Subir Chatbot Lambda
+        uses: aws-actions/aws-cli-action@v1
+        with:
+          aws-access-key-id: AKIAXL6AUVJGLD3NFNH7
+          aws-secret-access-key: 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
+          aws-region: us-east-1
+          script: |
+            aws lambda update-function-code \
+              --function-name AgenteDataBedrock \
+              --zip-file fileb://lambda%20chatbot/chatbot_lambda.zip
+
+  deploy-feedback:
+    name: Deploy Feedback Lambda
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Empaquetar Feedback Lambda
+        run: |
+          cd "lambda feedback"
+          zip -r feedback_lambda.zip .
+
+      - name: Subir Feedback Lambda
+        uses: aws-actions/aws-cli-action@v1
+        with:
+          aws-access-key-id: AKIAXL6AUVJGLD3NFNH7
+          aws-secret-access-key: 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
+          aws-region: us-east-1
+          script: |
+            aws lambda update-function-code \
+              --function-name LambdaUserFeedback \
+              --zip-file fileb://lambda%20feedback/feedback_lambda.zip
