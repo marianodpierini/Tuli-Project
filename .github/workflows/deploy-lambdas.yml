@@ -25,8 +25,8 @@ jobs:
       - name: Configurar credenciales AWS
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: AKIAXL6AUVJGLD3NFNH7
-          aws-secret-access-key: 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
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
       - name: Subir Chatbot Lambda
@@ -51,8 +51,8 @@ jobs:
       - name: Configurar credenciales AWS
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: AKIAXL6AUVJGLD3NFNH7
-          aws-secret-access-key: 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
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
       - name: Subir Feedback Lambda
