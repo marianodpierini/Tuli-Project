@@ -8,6 +8,7 @@ import traceback
 import uuid
 import time as pytime
 import jwt
+import hashlib
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,6 +33,9 @@ CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type,Authorization",
     "Access-Control-Allow-Methods": "OPTIONS,POST"
 }
+
+dynamodb = boto3.resource('dynamodb')
+user_questions_table = dynamodb.Table('user_questions_table')
 
 @dataclass
 class APIGatewayModel():
@@ -238,6 +242,34 @@ class ApiRequestHandler(RequestHandler):
         prohibited_words = ['palabra_prohibida1', 'palabra_prohibida2']
         return not any(word in text.lower() for word in prohibited_words)
     
+    def save_user_question(self, question: str):
+        now = datetime.now().isoformat()
+        question_id = hashlib.md5(question.encode()).hexdigest()
+
+        response = user_questions_table.update_item(
+            Key={
+                'user_id': self.user_context.user_email,
+                'question_id': question_id
+            },
+            UpdateExpression="""
+                SET #c = if_not_exists(#c, :start) + :inc,
+                    question = :q,
+                    last_asked = :now
+            """,
+            ExpressionAttributeNames={
+                '#c': 'count'
+            },
+            ExpressionAttributeValues={
+                ':start': 0,
+                ':inc': 1,
+                ':q': question,
+                ':now': now
+            },
+            ReturnValues="UPDATED_NEW"
+        )
+
+        return response
+    
     def process_conversation_with_bedrock(self, conversation_history, session_id, db_data=""):
         """
         Envía el último mensaje de 'conversation_history' + un contexto adicional con
@@ -274,6 +306,8 @@ class ApiRequestHandler(RequestHandler):
         last_message = self.clean_input_text(self.normalize_text(last_message))
         if not self.is_message_valid(last_message):
             return "Mensaje contiene contenido no permitido.", None
+        
+        self.save_user_question(last_message)
 
         # 6. Obtiene session_id o genera uno nuevo
         #session_id = conversation_history[-1].get('sessionId', str(uuid.uuid4()))
