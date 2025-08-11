@@ -4,7 +4,9 @@ import sys
 import time as pytime
 import traceback
 
-from core.request_handler import APIGatewayModel, BedrockEvent, ApiRequestHandler, BedrockRequestHandler
+from core.request_handler import APIGatewayModel, BedrockEvent
+from core.api_handler import ApiRequestHandler
+from core.bedrock_handler import BedrockRequestHandler
 
 # Configuración de logging
 logging.basicConfig(
