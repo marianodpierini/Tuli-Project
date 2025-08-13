@@ -108,7 +108,7 @@ class ApiRequestHandler(RequestHandler):
     def normalize_text(self, text):
         return unicodedata.normalize('NFKC', text)
     
-    def normalize_question(question: str) -> str:
+    def normalize_question(self, question: str) -> str:
         tokens = [
             word.lower()
             for word in question.split()

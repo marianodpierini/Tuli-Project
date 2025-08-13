@@ -77,7 +77,7 @@ class RequestHandler:
         # Configuración del gestor de consultas
         allowed_tables = [
             "aptour.servicios_tckts_rvas",
-            "servicios_tckts_rvas"
+            "servicios_tckts_rvas",
             "aptour.suggested_questions",
             "suggested_questions"
         ]

@@ -67,16 +67,17 @@ class ServiciosTcktsRvas(Base):
 
 class SuggestedQuestions(Base):
     __tablename__ = "suggested_questions"
+    __table_args__ = {"schema": "aptour"}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     nombre = Column(Text, nullable=False)
     descripcion = Column(Text)
     categoria = Column(Text)
-    sql_query = Column(Text, nullabe=False)
+    sql_query = Column(Text, nullable=False)
     parametros = Column(JSONB)
     activa = Column(Boolean, default=True)
     prioridad = Column(Integer)
-    keyboards = Column(Text)
+    keywords = Column(Text)
     frecuencia = Column(Text)
     template_respuesta = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
