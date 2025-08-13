@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Float, BigInteger, Boolean, Text, DateTime, String, Integer
+from sqlalchemy import Column, Float, BigInteger, Boolean, Text, DateTime, String, Integer, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.declarative import declared_attr
+from sqlalchemy.dialects.postgresql import JSONB
 
 Base = declarative_base()
 
@@ -62,3 +63,21 @@ class ServiciosTcktsRvas(Base):
     _airbyte_emitted_at = Column(DateTime(timezone=True), nullable=True)
     _airbyte_normalized_at = Column(DateTime(timezone=True), nullable=True)
     _airbyte_servicios_tckts_rvas_hashid = Column(Text, nullable=True)
+
+
+class SuggestedQuestions(Base):
+    __tablename__ = "suggested_questions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    nombre = Column(Text, nullable=False)
+    descripcion = Column(Text)
+    categoria = Column(Text)
+    sql_query = Column(Text, nullabe=False)
+    parametros = Column(JSONB)
+    activa = Column(Boolean, default=True)
+    prioridad = Column(Integer)
+    keyboards = Column(Text)
+    frecuencia = Column(Text)
+    template_respuesta = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -12,12 +12,17 @@ from logging import Logger
 from core.improved_context_classes import EnhancedUserContext, UserActivityTracker, CustomJSONEncoder
 from core.request_handler import APIGatewayModel, RequestHandler
 
+from core.database.db import SessionLocal, engine
+from core.database.models import SuggestedQuestions
+
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "https://front-app-ia.s3.us-east-1.amazonaws.com",
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Headers": "Content-Type,Authorization",
     "Access-Control-Allow-Methods": "OPTIONS,POST"
 }
+
+STOP_WORDS = {"en", "la", "el", "los", "las", "que", "de", "a", "y", "o", "un", "una"}
 
 dynamodb = boto3.resource('dynamodb')
 user_questions_table = dynamodb.Table('user_questions_table')
@@ -51,6 +56,7 @@ class ApiRequestHandler(RequestHandler):
         user_email = None
         username = None
         session_id = None
+        work_area = None
 
         if token:
             decoded = jwt.decode(token, options={"verify_signature": False})
@@ -58,6 +64,7 @@ class ApiRequestHandler(RequestHandler):
             user_email = decoded.get("email")
             username = decoded.get("cognito:username")
             session_id = decoded.get("sub")
+            work_area = decoded.get("custom:work_area")
 
         if not session_id:
             session_id = str(uuid.uuid4())[:8]
@@ -84,7 +91,7 @@ class ApiRequestHandler(RequestHandler):
             "unknown"
         )
         
-        user_context = EnhancedUserContext(user_id, session_id, ip_address, user_agent, user_email, username, UserActivityTracker(self.logger))
+        user_context = EnhancedUserContext(user_id, session_id, ip_address, user_agent, user_email, username, work_area, UserActivityTracker(self.logger))
         
         # Registrar inicio de sesión
         self.user_logger.log_user_session_event(user_context, "SESSION_START", {
@@ -101,13 +108,22 @@ class ApiRequestHandler(RequestHandler):
     def normalize_text(self, text):
         return unicodedata.normalize('NFKC', text)
     
+    def normalize_question(question: str) -> str:
+        tokens = [
+            word.lower()
+            for word in question.split()
+            if word.lower() not in STOP_WORDS
+        ]
+        return " ".join(tokens)
+    
     def is_message_valid(self, text):
         prohibited_words = ['palabra_prohibida1', 'palabra_prohibida2']
         return not any(word in text.lower() for word in prohibited_words)
     
     def save_user_question(self, question: str):
         now = datetime.now().isoformat()
-        question_id = hashlib.md5(question.encode()).hexdigest()
+        standardized_question = self.normalize_question(question)
+        question_id = hashlib.md5(standardized_question.encode()).hexdigest()
 
         response = user_questions_table.update_item(
             Key={
@@ -222,6 +238,35 @@ class ApiRequestHandler(RequestHandler):
 
         return sorted_items[:limit]
     
+    def get_active_suggestions(self, user_input: str):
+        tokens = set(
+            word.lower()
+            for word in user_input.split()
+            if word.lower() not in STOP_WORDS
+        )
+        coincidencias = []
+
+        with SessionLocal() as session:
+            query = session.query(SuggestedQuestions).filter(SuggestedQuestions.activa == True)
+            if self.user_context.work_area:
+                query = query.filter(SuggestedQuestions.categoria == self.user_context.work_area)
+
+            results = query.order_by(SuggestedQuestions.prioridad).all()
+
+        for result in results:
+            if result.keywords:
+                if any(kw.lower() in tokens for kw in result.keywords):
+                    coincidencias.append(result)
+
+        suggestions = [{
+            "nombre": p.nombre,
+            "descripcion": p.descripcion,
+            "categoria": p.categoria
+        } for p in coincidencias]
+
+            
+        return suggestions
+    
     def handle_event(self):
         try:
             first_call = self.event.body.get('firstCall', None)
@@ -262,14 +307,17 @@ class ApiRequestHandler(RequestHandler):
                     "headers": CORS_HEADERS,
                     "body": json.dumps({"error": "No se proporcionó historial."})
                 }
+            
             output_text = self.process_conversation_with_bedrock(conversation_history, self.user_context.session_id)
+            suggested_questions = self.get_active_suggestions(last_message)
 
             return {
                 "statusCode": 200,
                 "headers": CORS_HEADERS,
                 "body": json.dumps({
                     "outputText": output_text,
-                    "sessionId": self.user_context.session_id
+                    "sessionId": self.user_context.session_id,
+                    "suggestions": suggested_questions
                 })
             }
 

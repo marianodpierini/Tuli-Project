@@ -458,11 +458,12 @@ class UserActivityTracker:
 class EnhancedUserContext:
     """UserContext extendido con capacidades de sesión avanzadas"""
     
-    def __init__(self, user_id=None, session_id=None, ip_address=None, user_agent=None, user_email: str=None, username: str=None, activity_tracker: UserActivityTracker = None):
+    def __init__(self, user_id=None, session_id=None, ip_address=None, user_agent=None, user_email: str=None, username: str=None, work_area: str=None, activity_tracker: UserActivityTracker = None):
         self.user_id = user_id or "anonymous"
         self.session_id = session_id
         self.user_email = user_email
         self.username = username
+        self.work_area = work_area
         self.ip_address = ip_address or "unknown"
         self.user_agent = user_agent or "unknown"
         self.request_timestamp = datetime.now().isoformat()
