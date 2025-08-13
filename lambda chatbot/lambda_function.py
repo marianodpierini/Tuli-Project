@@ -46,7 +46,7 @@ def is_api_gateway_event(event: dict) -> bool:
 
 def lambda_handler(event, context):
     """
-    Lambda handler principal con sistema completo de logging por usuario
+    Lambda handler principal con sistema completo de logging por usuarios
     """
     logger.info(f"EVENT: {json.dumps(event)}")
 
