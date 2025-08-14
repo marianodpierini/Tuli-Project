@@ -69,6 +69,7 @@ def lambda_handler(event, context):
             "user_question": event.body.get("user_question"),
             "agent_response": event.body.get("agent_response"),
             "feedback": event.body.get("feedback"),
+            "comment": event.body.get("comment"),
             "success": event.body.get("success"),
             "source": event.body.get("source"),
             "session_id": session_id
