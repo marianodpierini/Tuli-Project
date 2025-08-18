@@ -1,4 +1,5 @@
 import json
+from typing import List
 import unicodedata
 import boto3
 import botocore
@@ -9,10 +10,12 @@ import hashlib
 from datetime import datetime
 from logging import Logger
 
+from sqlalchemy import any_, and_, text
+
 from core.improved_context_classes import EnhancedUserContext, UserActivityTracker, CustomJSONEncoder
 from core.request_handler import APIGatewayModel, RequestHandler
 
-from core.database.db import SessionLocal, engine
+from core.database.db import SessionLocal
 from core.database.models import SuggestedQuestions
 
 CORS_HEADERS = {
@@ -149,6 +152,63 @@ class ApiRequestHandler(RequestHandler):
 
         return response
     
+    def valite_existing_response(self, session_id: str, keywords: List[str], user_input: str):
+
+        conditions = [kw == any_(SuggestedQuestions.keywords) for kw in keywords]
+
+        config = botocore.config.Config(
+            connect_timeout=30,
+            read_timeout=120,  # Aumentar si las respuestas del agente tardan
+            retries={
+                'max_attempts': 3,
+                'mode': 'standard'
+            }
+        )
+
+        client = boto3.client('bedrock-agent-runtime', region_name='us-east-1', config=config)
+
+        with SessionLocal() as session:
+            existing_question = (
+                session.query(SuggestedQuestions)
+                .filter(SuggestedQuestions.activa.is_(True), and_(*conditions))
+                .order_by(SuggestedQuestions.prioridad)
+                .first()
+            )
+
+            if existing_question:
+                sql_query = existing_question.sql_query
+                query_results = session.execute(text(sql_query))
+
+                query_result_dicts = [dict(row._mapping) for row in query_results]
+
+
+                input_text = f"""
+                    El usuario preguntó: "{user_input}"
+
+                    La consulta SQL asociada (ID {existing_question.id}) devolvió estos resultados:
+                    {json.dumps(query_result_dicts, ensure_ascii=False, indent=2)}
+
+                    Por favor responde al usuario en lenguaje natural, breve y clara,
+                    usando los resultados de la consulta.
+                    """
+
+                self.logger.info(f"Mensaje enviado {input_text}")
+
+                params = {
+                    'agentId': 'DRSOAFDOTR',         # Reemplazá con tu agente real si hace falta
+                    'agentAliasId': 'XKJTFFEMPC',    # Reemplazá si tenés otro alias
+                    'sessionId': session_id,
+                    'inputText': input_text,
+                    'enableTrace': False,
+                }
+
+                response = client.invoke_agent(**params)
+
+                return response
+
+            else:
+                return None
+    
     def process_conversation_with_bedrock(self, conversation_history, session_id, db_data=""):
         """
         Envía el último mensaje de 'conversation_history' + un contexto adicional con
@@ -188,6 +248,36 @@ class ApiRequestHandler(RequestHandler):
         
         self.save_user_question(last_message)
 
+        keywords = [kw for kw in last_message.split() if kw.lower() not in STOP_WORDS]
+
+        validation = self.valite_existing_response(session_id, keywords, last_message)
+        
+        new_q_id = None
+
+        if validation:
+            assistant_response = ""
+            event_stream = validation.get('completion')
+            
+            if isinstance(event_stream, botocore.eventstream.EventStream):
+                for event in event_stream:
+                    if 'chunk' in event:
+                        chunk_data = event['chunk']['bytes'].decode('utf-8')
+                        assistant_response += chunk_data
+
+            self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
+            return assistant_response.strip()
+        else:
+            with SessionLocal() as session:
+                new_q = SuggestedQuestions(
+                    nombre=last_message,
+                    activa=True,
+                    keywords=keywords,
+                )
+                session.add(new_q)
+                session.commit()
+
+                new_q_id = new_q.id
+
         # 6. Obtiene session_id o genera uno nuevo
         #session_id = conversation_history[-1].get('sessionId', str(uuid.uuid4()))
         self.logger.info(f"sessionId enviado a Bedrock: {session_id}")
@@ -200,6 +290,11 @@ class ApiRequestHandler(RequestHandler):
             'sessionId': session_id,
             'inputText': last_message,
             'enableTrace': False,
+            'sessionState': {
+                "sessionAttributes": {
+                    "suggestion_id": str(new_q_id) if new_q_id else None
+                }
+            }
         }
 
         try:

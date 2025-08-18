@@ -7,6 +7,7 @@ Base = declarative_base()
 
 class ServiciosTcktsRvas(Base):
     __tablename__ = "servicios_tckts_rvas"
+    __table_args__ = {"schema": "aptour"}
 
     @declared_attr
     def __mapper_args__(cls):
@@ -73,7 +74,7 @@ class SuggestedQuestions(Base):
     nombre = Column(Text, nullable=False)
     descripcion = Column(Text)
     categoria = Column(Text)
-    sql_query = Column(Text, nullable=False)
+    sql_query = Column(Text)
     parametros = Column(JSONB)
     activa = Column(Boolean, default=True)
     prioridad = Column(Integer)

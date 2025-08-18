@@ -7,11 +7,12 @@ from datetime import datetime
 from functools import lru_cache
 
 from sqlalchemy.inspection import inspect
-from sqlalchemy import inspect, extract, select, func
+from sqlalchemy import inspect, extract, select, func, update
+from sqlalchemy.dialects import postgresql
 
 from core.improved_context_classes import EnhancedUserContext, UserActivityTracker, CustomJSONEncoder
 from core.database.db import SessionLocal, engine
-from core.database.models import ServiciosTcktsRvas
+from core.database.models import ServiciosTcktsRvas, SuggestedQuestions
 
 from core.request_handler import RequestHandler
 
@@ -141,6 +142,19 @@ class BedrockRequestHandler(RequestHandler):
         sql_start = pytime.time()
         results = self.executor.execute(query, self.user_context)
         sql_time = pytime.time() - sql_start
+
+        new_id = self.event.session_attributes.get("suggestion_id")
+
+        if new_id:
+            with SessionLocal() as session:
+                stmt = (
+                    update(SuggestedQuestions)
+                    .where(SuggestedQuestions.id == new_id)
+                    .values(sql_query=query)
+                )
+
+                session.execute(stmt)
+                session.commit()
             
         self.logger.info(f"[{self.event_id}] Consulta ejecutada en {sql_time:.2f}s con session: {self.bedrock_session_id}")
             
