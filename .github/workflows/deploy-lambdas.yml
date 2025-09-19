@@ -60,3 +60,29 @@ jobs:
           aws lambda update-function-code \
             --function-name LambdaUserFeedback \
             --zip-file fileb://lambda\ feedback/feedback_lambda.zip
+  
+  deploy-etl:
+    name: Deploy etl Lambda
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Empaquetar etl Lambda
+        run: |
+          cd "lambda etl"
+          zip -r etl_lambda.zip .
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Subir etl Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name LambdaEtlPostgreSql \
+            --zip-file fileb://lambda\ etl/etl_lambda.zip
