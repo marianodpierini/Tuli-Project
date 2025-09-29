@@ -228,7 +228,11 @@ class ApiRequestHandler(RequestHandler):
         client = boto3.client('bedrock-agent-runtime', region_name='us-east-1', config=config)
 
         # 1. Extrae el último mensaje
-        last_message = conversation_history[-1]['content']
+        source = self.event.headers["User-Agent"]
+        if "Meta" in source:
+            last_message = conversation_history
+        else:
+            last_message = conversation_history[-1]['content']
 
         # 2. Log para diagnosticar tamaño y snippet
         self.logger.info(f"[Bedrock] Mensaje final enviado (len={len(last_message)}): {repr(last_message)}")
@@ -381,8 +385,18 @@ class ApiRequestHandler(RequestHandler):
             }
                 
 
-            conversation_history = self.event.body.get('conversationHistory', [])
-            last_message = conversation_history[-1]['content']
+            source = self.event.headers["User-Agent"]
+            if "Meta" in source:
+                for entry in self.event.body.get("entry", []):
+                    for change in entry.get("changes", []):
+                        value = change.get("value", {})
+                        messages = value.get("messages", [])
+                        for msg in messages:
+                            last_message = msg["text"]["body"]
+                            conversation_history = msg["text"]["body"]
+            else:
+                conversation_history = self.event.body.get('conversationHistory', [])
+                last_message = conversation_history[-1]['content']
 
             self.user_logger.log_user_request(
                 self.user_context,

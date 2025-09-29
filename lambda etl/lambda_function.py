@@ -11,7 +11,7 @@ from io import StringIO
 import boto3
 import pandas as pd
 import psycopg2
-from sqlalchemy import create_engine, text, Table, Column, MetaData
+from sqlalchemy import create_engine, text, Table, Column, MetaData, PrimaryKeyConstraint
 from sqlalchemy import Integer, Float, Text, Boolean, Date, DateTime, BigInteger
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
@@ -47,7 +47,7 @@ class Config:
     bucket: str
     base_prefix: str
     table: str
-    pk: str = "id"
+    pk: Tuple[str, ...] = ("id",)
     apply: bool = False
     parquet_batch_size: int = 128000
     pg_batch_size: int = 50000
@@ -70,7 +70,7 @@ def list_parquet_keys(cfg: Config):
     return keys
 
 
-def ensure_table_exists(table_name: str, parquet_path: str, pk: str, engine):
+def ensure_table_exists(table_name: str, parquet_path: str, pk: Tuple[str, ...], engine):
     logger.info(f"Inicia proceso de validacion de existencia de tabla")
     meta = MetaData()
     meta.reflect(bind=engine)
@@ -104,12 +104,9 @@ def ensure_table_exists(table_name: str, parquet_path: str, pk: str, engine):
         else:
             col_type = Text
 
-        if field.name == pk:
-            cols.append(Column(field.name, col_type, primary_key=True))
-        else:
-            cols.append(Column(field.name, col_type))
+        cols.append(Column(field.name, col_type))
 
-    table = Table(table_name, meta, *cols)
+    table = Table(table_name, meta, *cols, PrimaryKeyConstraint(*pk))
     table.create(engine)
 
 
@@ -147,7 +144,7 @@ def load_parquet_to_staging(cfg: Config, engine, keys):
     cur = raw_conn.cursor()
 
     cur.execute(f"DROP TABLE IF EXISTS {cfg.staging_table}")
-    cur.execute(f"CREATE TEMP TABLE {cfg.staging_table} (LIKE {cfg.table} INCLUDING ALL)")
+    cur.execute(f"CREATE TEMP TABLE {cfg.staging_table} (LIKE {cfg.table} INCLUDING DEFAULTS)")
 
     total_rows = 0
 
@@ -207,15 +204,20 @@ def load_parquet_to_staging(cfg: Config, engine, keys):
 
 
 def merge_staging_into_target(cfg: Config, engine):
+    cols = [col for col in get_table_columns(cfg.table, engine) if col not in cfg.pk]
+
     merge_sql = f"""
     INSERT INTO {cfg.table} AS t
-    SELECT * FROM {cfg.staging_table}
-    ON CONFLICT ({cfg.pk}) DO UPDATE
-    SET {', '.join([f"{col}=EXCLUDED.{col}" for col in get_table_columns(cfg.table, engine) if col != cfg.pk])}
+    SELECT DISTINCT ON ({', '.join(cfg.pk)}) *
+    FROM {cfg.staging_table}
+    ORDER BY {', '.join(cfg.pk)}, _airbyte_emitted_at DESC
+    ON CONFLICT ({', '.join(cfg.pk)}) DO UPDATE
+    SET {', '.join([f"{col}=EXCLUDED.{col}" for col in cols])}
     """
+
     with engine.begin() as conn:
         conn.execute(text(merge_sql))
-    logger.info("Merge finalizado")
+    logger.info("Merge finalizado con DISTINCT ON")
 
 
 def get_table_columns(table_name: str, engine):
@@ -251,7 +253,7 @@ def lambda_handler(event, context):
         bucket="rvas-svicios-parquet",
         base_prefix="rvas-svicios",
         table=os.environ["TABLE_NAME"],
-        pk=os.getenv("PK", "_airbyte_ab_id"),
+        pk=("id_res", "numero"),
         apply=os.getenv("APPLY", "false").lower() == "true",
         exclude_from_hash=tuple(os.getenv("EXCLUDE_FROM_HASH", "").split(",")) if os.getenv("EXCLUDE_FROM_HASH") else tuple(),
     )
