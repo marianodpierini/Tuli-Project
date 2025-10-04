@@ -1,4 +1,5 @@
 import json
+import os
 from typing import List
 import unicodedata
 import boto3
@@ -11,6 +12,7 @@ from datetime import datetime
 from logging import Logger
 
 from sqlalchemy import any_, and_, text
+from twilio.rest import Client
 
 from core.improved_context_classes import EnhancedUserContext, UserActivityTracker, CustomJSONEncoder
 from core.request_handler import APIGatewayModel, RequestHandler
@@ -25,7 +27,13 @@ CORS_HEADERS = {
     "Access-Control-Allow-Methods": "OPTIONS,POST"
 }
 
-STOP_WORDS = {"en", "la", "el", "los", "las", "que", "de", "a", "y", "o", "un", "una"}
+STOP_WORDS = {"en", "la", "el", "los", "las", "que", "de", "a", "y", "o", "un", "una", "?"}
+
+CONTEXT_DEPENDENT_PHRASES = {
+        "y después", "y ahora", "qué más", "seguí", "continúa",
+        "cual de esos", "ese", "esa", "eso", "esas", "esos",
+        "ahora", "después", "también", "además"
+    }
 
 dynamodb = boto3.resource('dynamodb')
 user_questions_table = dynamodb.Table('user_questions_table')
@@ -34,6 +42,19 @@ class ApiRequestHandler(RequestHandler):
     def __init__(self, logger: Logger, req_id: str, event: APIGatewayModel, lambda_handler):
         self.event = event
         super().__init__(logger, req_id, event, lambda_handler)
+
+    def send_whatsapp(self, text):
+        self.logger.info("Enviando respuesta a twilio...")
+        client = Client(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
+
+        from_number = self.event.body["to"]
+        to_number = self.event.body["from"]
+
+        return client.messages.create(
+            from_=from_number,
+            to=to_number,
+            body=text
+        )
 
     def format_response_for_api(self, resource, http_method, status_code, data, request_context):
         json_body = json.dumps(data, cls=CustomJSONEncoder)
@@ -103,6 +124,65 @@ class ApiRequestHandler(RequestHandler):
         })
         
         return user_context
+
+    def is_context_independent_heuristic(self, question: str) -> bool | None:
+        """
+        Devuelve:
+        True  -> seguro independiente
+        False -> seguro dependiente
+        None  -> dudoso, hay que consultar al LLM
+        """
+        q = question.strip().lower()
+
+        if len(q.split()) < 3:
+            return False
+
+        for phrase in CONTEXT_DEPENDENT_PHRASES:
+            if phrase in q:
+                return False
+
+        if q.endswith("?") and len(q) < 10:
+            return False
+
+        if q.startswith(("divididas", "separadas", "por ")):
+            return False
+
+        verbos_comunes = {"son", "fueron", "hubo", "hay", "serán", "tiene", "mostrar", "listar"}
+        if any(v in q for v in verbos_comunes):
+            return True
+
+        return None
+
+    def classify_with_bedrock(self, question: str) -> bool:
+        """
+        Usa un LLM en Bedrock para decidir.
+        Devuelve True si es independiente, False si es dependiente.
+        """
+        client = boto3.client("bedrock-runtime", region_name="us-east-1")
+
+        prompt = f"""
+        Dada esta frase del usuario: "{question}"
+
+        Responde SOLO con una palabra: 'independiente' si puede entenderse sola,
+        o 'dependiente' si necesita contexto previo.
+        """
+
+        response = client.invoke_model(
+            modelId="anthropic.claude-3-5-haiku-20241022-v1:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps({
+                "inputText": prompt,
+                "maxTokens": 10,
+                "temperature": 0.0
+            })
+        )
+
+        result = json.loads(response["body"].read())
+        output = result["outputText"].strip().lower()
+
+        return output.startswith("independiente")
+
     
     def clean_input_text(self, text):
         text = ''.join(filter(str.isprintable, text))
@@ -128,9 +208,11 @@ class ApiRequestHandler(RequestHandler):
         standardized_question = self.normalize_question(question)
         question_id = hashlib.md5(standardized_question.encode()).hexdigest()
 
+        user_id = self.user_context.user_email if self.user_context.user_email is not None else self.event.body["raw"]["ProfileName"][0]
+
         response = user_questions_table.update_item(
             Key={
-                'user_id': self.user_context.user_email,
+                'user_id': user_id,
                 'question_id': question_id
             },
             UpdateExpression="""
@@ -175,7 +257,7 @@ class ApiRequestHandler(RequestHandler):
                 .first()
             )
 
-            if existing_question:
+            if existing_question and existing_question.sql_query is not None:
                 sql_query = existing_question.sql_query
                 query_results = session.execute(text(sql_query))
 
@@ -191,7 +273,8 @@ class ApiRequestHandler(RequestHandler):
                     Por favor responde al usuario en lenguaje natural, breve y clara,
                     usando los resultados de la consulta.
                     """
-
+                
+                self.logger.info(f"[INFO] Se ha utilizado una pregunta precargada")
                 self.logger.info(f"Mensaje enviado {input_text}")
 
                 params = {
@@ -228,8 +311,8 @@ class ApiRequestHandler(RequestHandler):
         client = boto3.client('bedrock-agent-runtime', region_name='us-east-1', config=config)
 
         # 1. Extrae el último mensaje
-        source = self.event.headers["User-Agent"]
-        if "Meta" in source:
+        source = self.event.source
+        if "whatsapp" in source:
             last_message = conversation_history
         else:
             last_message = conversation_history[-1]['content']
@@ -258,29 +341,40 @@ class ApiRequestHandler(RequestHandler):
         
         new_q_id = None
 
-        if validation:
-            assistant_response = ""
-            event_stream = validation.get('completion')
+        # if validation:
+        #     assistant_response = ""
+        #     event_stream = validation.get('completion')
             
-            if isinstance(event_stream, botocore.eventstream.EventStream):
-                for event in event_stream:
-                    if 'chunk' in event:
-                        chunk_data = event['chunk']['bytes'].decode('utf-8')
-                        assistant_response += chunk_data
+        #     if isinstance(event_stream, botocore.eventstream.EventStream):
+        #         for event in event_stream:
+        #             if 'chunk' in event:
+        #                 chunk_data = event['chunk']['bytes'].decode('utf-8')
+        #                 assistant_response += chunk_data
 
-            self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
-            return assistant_response.strip()
-        else:
-            with SessionLocal() as session:
-                new_q = SuggestedQuestions(
-                    nombre=last_message,
-                    activa=True,
-                    keywords=keywords,
-                )
-                session.add(new_q)
-                session.commit()
+        #     self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
+        #     return assistant_response.strip()
+        # else:
+        #     save_question = False
 
-                new_q_id = new_q.id
+        #     decision = self.is_context_independent_heuristic(last_message)
+
+        #     if decision is True:
+        #         save_question = True
+        #     elif decision is None:
+        #         if self.classify_with_bedrock(last_message):
+        #             save_question = True
+
+        #     if save_question:
+        #         with SessionLocal() as session:
+        #             new_q = SuggestedQuestions(
+        #                 nombre=last_message,
+        #                 activa=True,
+        #                 keywords=keywords,
+        #             )
+        #             session.add(new_q)
+        #             session.commit()
+
+        #             new_q_id = new_q.id
 
         # 6. Obtiene session_id o genera uno nuevo
         #session_id = conversation_history[-1].get('sessionId', str(uuid.uuid4()))
@@ -294,11 +388,11 @@ class ApiRequestHandler(RequestHandler):
             'sessionId': session_id,
             'inputText': last_message,
             'enableTrace': False,
-            'sessionState': {
-                "sessionAttributes": {
-                    "suggestion_id": str(new_q_id) if new_q_id else None
-                }
-            }
+            # 'sessionState': {
+            #     "sessionAttributes": {
+            #         "suggestion_id": str(new_q_id) if new_q_id else None
+            #     }
+            # }
         }
 
         try:
@@ -385,16 +479,13 @@ class ApiRequestHandler(RequestHandler):
             }
                 
 
-            source = self.event.headers["User-Agent"]
-            if "Meta" in source:
-                for entry in self.event.body.get("entry", []):
-                    for change in entry.get("changes", []):
-                        value = change.get("value", {})
-                        messages = value.get("messages", [])
-                        for msg in messages:
-                            last_message = msg["text"]["body"]
-                            conversation_history = msg["text"]["body"]
+            source = self.event.source
+            if "whatsapp" in source:
+                self.logger.info("[SOURCE] Evento recibido desde WhatsApp")
+                conversation_history = self.event.body["message"]
+                last_message = self.event.body["message"]
             else:
+                self.logger.info("[SOURCE] Evento recibido desde FrontEndss")
                 conversation_history = self.event.body.get('conversationHistory', [])
                 last_message = conversation_history[-1]['content']
 
@@ -416,19 +507,23 @@ class ApiRequestHandler(RequestHandler):
                     "headers": CORS_HEADERS,
                     "body": json.dumps({"error": "No se proporcionó historial."})
                 }
+        
             
             output_text = self.process_conversation_with_bedrock(conversation_history, self.user_context.session_id)
             suggested_questions = self.get_active_suggestions(last_message)
 
-            return {
-                "statusCode": 200,
-                "headers": CORS_HEADERS,
-                "body": json.dumps({
-                    "outputText": output_text,
-                    "sessionId": self.user_context.session_id,
-                    "suggestions": suggested_questions
-                })
-            }
+            if "whatsapp" in source:
+                self.send_whatsapp(output_text)
+            else:                
+                return {
+                    "statusCode": 200,
+                    "headers": CORS_HEADERS,
+                    "body": json.dumps({
+                        "outputText": output_text,
+                        "sessionId": self.user_context.session_id,
+                        "suggestions": suggested_questions
+                    })
+                }
 
         except Exception as e:
             self.logger.error(f"Error en API Gateway: {str(e)}")

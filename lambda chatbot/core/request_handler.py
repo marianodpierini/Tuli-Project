@@ -33,6 +33,7 @@ class APIGatewayModel():
     request_context: Optional[Dict[str, str]]
     headers: Optional[Dict[str, str]]
     body: Optional[Dict[str, str]]
+    source: Optional[str]
 
 @dataclass
 class BedrockEvent():

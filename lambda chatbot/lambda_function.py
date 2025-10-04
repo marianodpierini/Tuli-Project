@@ -26,6 +26,7 @@ def get_params_api_gateway(event):
         request_context=event.get("requestContext"),
         headers=event.get("headers"),
         body=json.loads(event.get("body")),
+        source=event.get("source", "front")
     )
 
 def get_params_bedrock(event):
