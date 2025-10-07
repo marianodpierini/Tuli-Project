@@ -92,7 +92,6 @@ class ScheduledHandler:
             latest = date.fromisoformat(user["ultima_vez"])
             difference = today - latest
             if user["frecuencia"] <= difference.days:
-                print(user)
                 for query in user["querys"]:
                     key = f"{user['nombre'].strip().lower()}:{user['email'].strip().lower()}"
                     session_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]

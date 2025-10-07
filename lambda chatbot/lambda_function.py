@@ -47,7 +47,7 @@ def is_api_gateway_event(event: dict) -> bool:
     return 'httpMethod' in event and 'path' in event
 
 def is_rule_event(event: dict) -> bool:
-    return 'Scheduled Event' in event["message"]["detail-type"]
+    return 'message' in event and 'Scheduled Event' in event["message"]["detail-type"]
 
 def lambda_handler(event, context):
     """
