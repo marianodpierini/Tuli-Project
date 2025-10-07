@@ -249,6 +249,7 @@ def process(cfg: Config, engine):
 
 
 def lambda_handler(event, context):
+    logger.info(f"EVENT: {json.dumps(event)}")
     cfg = Config(
         bucket="rvas-svicios-parquet",
         base_prefix="rvas-svicios",

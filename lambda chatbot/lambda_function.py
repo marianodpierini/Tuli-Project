@@ -7,6 +7,7 @@ import traceback
 from core.request_handler import APIGatewayModel, BedrockEvent
 from core.api_handler import ApiRequestHandler
 from core.bedrock_handler import BedrockRequestHandler
+from core.scheduled_handler import ScheduledHandler
 
 # Configuración de logging
 logging.basicConfig(
@@ -45,6 +46,9 @@ def get_params_bedrock(event):
 def is_api_gateway_event(event: dict) -> bool:
     return 'httpMethod' in event and 'path' in event
 
+def is_rule_event(event: dict) -> bool:
+    return 'Scheduled Event' in event["message"]["detail-type"]
+
 def lambda_handler(event, context):
     """
     Lambda handler principal con sistema completo de logging por usuarios
@@ -64,6 +68,11 @@ def lambda_handler(event, context):
             event = get_params_api_gateway(event)
             handler = ApiRequestHandler(logger, req_id, event, lambda_handler)
 
+            return handler.handle_event()
+        elif is_rule_event(event):
+            logger.debug(f"[{req_id}] Evento tipo Scheduled detectado")
+
+            handler = ScheduledHandler(logger)
             return handler.handle_event()
         else:
             logger.debug(f"[{req_id}] Evento tipo Bedrock detectado")
