@@ -458,7 +458,7 @@ class UserActivityTracker:
 class EnhancedUserContext:
     """UserContext extendido con capacidades de sesión avanzadas"""
     
-    def __init__(self, user_id=None, session_id=None, ip_address=None, user_agent=None, user_email: str=None, username: str=None, work_area: str=None, activity_tracker: UserActivityTracker = None):
+    def __init__(self, user_id=None, session_id=None, ip_address=None, user_agent=None, user_email: str=None, username: str=None, nickname: str=None, work_area: str=None, activity_tracker: UserActivityTracker = None):
         self.user_id = user_id or "anonymous"
         self.session_id = session_id
         self.user_email = user_email
@@ -470,6 +470,7 @@ class EnhancedUserContext:
         self.bedrock_session = {}
         self.session_start_time = datetime.now()
         self.activity_tracker = activity_tracker
+        self.nickname = nickname
         
     def get_user_hash(self):
         """Genera un hash del usuario para privacidad"""

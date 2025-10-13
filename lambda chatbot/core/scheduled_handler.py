@@ -3,7 +3,7 @@ import os
 import boto3
 import botocore
 import hashlib
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import text
 from logging import Logger
@@ -12,11 +12,33 @@ from twilio.rest import Client
 from core.database.db import SessionLocal
 
 dynamodb = boto3.resource('dynamodb')
-user_table = dynamodb.Table('users_table')
+user_table = dynamodb.Table('users_notifications_table')
+users_sessions_table = dynamodb.Table('users_sessions_table')
 
 class ScheduledHandler:
     def __init__(self, logger: Logger):
         self.logger = logger
+
+    def validate_user_session(self, session_id, canal, ttl_hours=30):
+        response = users_sessions_table.get_item(Key={"session_id": session_id})
+        item = response.get("Item")
+
+        now = datetime.now(timezone.utc)
+        current_time = int(now.timestamp())
+
+        expires_at = int((now + timedelta(minutes=ttl_hours)).timestamp())
+
+        if item and item["expires_at"] > current_time:
+            return item["session_id"]
+
+        users_sessions_table.put_item(
+            Item={
+                "session_id": session_id,
+                "channel": canal,
+                "expires_at": expires_at
+            }
+        )
+        return session_id
 
     def send_whatsapp(self, text, from_number, to_number):
         self.logger.info("Enviando respuesta a twilio...")
@@ -30,13 +52,13 @@ class ScheduledHandler:
 
     def get_users(self):
         response = user_table.scan(
-            ProjectionExpression="nombre, email, frecuencia, num_telefono, querys, ultima_vez"
+            ProjectionExpression="nombre, email, frecuencia, num_telefono, querys, ultima_vez, apodo, contexto_usuario"
         )
         items = response.get("Items", [])
 
         return items
     
-    def ask_question(self, question, query, session_id):
+    def ask_question(self, question, query, session_id, apodo, contexto_usuario):
         config = botocore.config.Config(
             connect_timeout=30,
             read_timeout=120,  # Aumentar si las respuestas del agente tardan
@@ -59,7 +81,7 @@ class ScheduledHandler:
                     {json.dumps(query_result_dicts, ensure_ascii=False, indent=2)}
 
                     Por favor responde al usuario en lenguaje natural, breve y clara,
-                    usando los resultados de la consulta.
+                    usando los resultados de la consulta, utiliza su apodo que es {apodo}.
                     """
         
         params = {
@@ -93,9 +115,11 @@ class ScheduledHandler:
             difference = today - latest
             if user["frecuencia"] <= difference.days:
                 for query in user["querys"]:
-                    key = f"{user['nombre'].strip().lower()}:{user['email'].strip().lower()}"
-                    session_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-                    response = self.ask_question(query["pregunta"], query["query"], session_id)
+                    num = user["num_telefono"]
+                    key = f"{num}_whatsapp"
+                    session_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
+                    session_id_validated = self.validate_user_session(session_id, "whatsapp", 30)
+                    response = self.ask_question(query["pregunta"], query["query"], session_id_validated, user["apodo"], user["contexto_usuario"])
                     if user["nombre"] not in dict_responses:
                         dict_responses[user["nombre"]] = [response]
                     else:

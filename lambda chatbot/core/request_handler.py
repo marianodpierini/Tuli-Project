@@ -1,5 +1,7 @@
 import base64
+from datetime import datetime, timedelta, timezone
 import gzip
+import hashlib
 import json
 import boto3
 import traceback
@@ -24,6 +26,7 @@ CORS_HEADERS = {
 
 dynamodb = boto3.resource('dynamodb')
 user_questions_table = dynamodb.Table('user_questions_table')
+users_sessions_table = dynamodb.Table('users_sessions_table')
 
 @dataclass
 class APIGatewayModel():
@@ -148,3 +151,24 @@ class RequestHandler:
                         data={"error": f"Error en el servidor: {str(e)}"},
                         status_code=500
                     )
+        
+    def validate_user_session(self, session_id, canal, ttl_hours=30):
+        response = users_sessions_table.get_item(Key={"session_id": session_id})
+        item = response.get("Item")
+
+        now = datetime.now(timezone.utc)
+        current_time = int(now.timestamp())
+
+        expires_at = int((now + timedelta(minutes=ttl_hours)).timestamp())
+
+        if item and item["expires_at"] > current_time:
+            return item["session_id"]
+
+        users_sessions_table.put_item(
+            Item={
+                "session_id": session_id,
+                "channel": canal,
+                "expires_at": expires_at
+            }
+        )
+        return session_id

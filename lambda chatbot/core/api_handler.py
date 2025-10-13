@@ -7,6 +7,7 @@ import botocore
 import uuid
 import jwt
 import hashlib
+from boto3.dynamodb.conditions import Attr
 
 from datetime import datetime
 from logging import Logger
@@ -37,6 +38,7 @@ CONTEXT_DEPENDENT_PHRASES = {
 
 dynamodb = boto3.resource('dynamodb')
 user_questions_table = dynamodb.Table('user_questions_table')
+user_table = dynamodb.Table('users_notifications_table')
 
 class ApiRequestHandler(RequestHandler):
     def __init__(self, logger: Logger, req_id: str, event: APIGatewayModel, lambda_handler):
@@ -81,14 +83,43 @@ class ApiRequestHandler(RequestHandler):
         username = None
         session_id = None
         work_area = None
+        canal = ""
+        nickname = ""
 
         if token:
             decoded = jwt.decode(token, options={"verify_signature": False})
 
             user_email = decoded.get("email")
             username = decoded.get("cognito:username")
-            session_id = decoded.get("sub")
+            sub = decoded.get("sub", "")
+            session_id = f"{sub}_frontend"
             work_area = decoded.get("custom:work_area")
+            canal = "frontend"
+
+            response = user_table.scan(
+                ProjectionExpression="apodo, contexto_usuario",
+                FilterExpression=Attr("email").eq(user_email)
+            )
+
+            items = response.get("Items", [])
+
+            nickname = items[0]["apodo"]
+
+        source = self.event.source
+        if "whatsapp" in source and session_id is None:
+            from_num = self.event.body["from"]
+            key = f"{from_num}_whatsapp"
+            session_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
+            canal = "whatsapp"
+
+            response = user_table.scan(
+                ProjectionExpression="apodo, contexto_usuario",
+                FilterExpression=Attr("num_telefono").eq(from_num)
+            )
+
+            items = response.get("Items", [])
+
+            nickname = items[0]["apodo"]
 
         if not session_id:
             session_id = str(uuid.uuid4())[:8]
@@ -114,8 +145,10 @@ class ApiRequestHandler(RequestHandler):
             identity.get('userAgent') or
             "unknown"
         )
+
+        session_id_validated = self.validate_user_session(session_id, canal, 30)
         
-        user_context = EnhancedUserContext(user_id, session_id, ip_address, user_agent, user_email, username, work_area, UserActivityTracker(self.logger))
+        user_context = EnhancedUserContext(user_id, session_id_validated, ip_address, user_agent, user_email, username, nickname, work_area, UserActivityTracker(self.logger))
         
         # Registrar inicio de sesión
         self.user_logger.log_user_session_event(user_context, "SESSION_START", {
@@ -381,6 +414,10 @@ class ApiRequestHandler(RequestHandler):
         self.logger.info(f"sessionId enviado a Bedrock: {session_id}")
 
         # 7. Construcción de parámetros - CAMBIO: Agregamos parámetros de control
+
+        last_message += f"""
+            Utiliza el apodo del usuario para responder, el cual es {self.user_context.nickname}
+        """
         
         params = {
             'agentId': 'DRSOAFDOTR',         # Reemplazá con tu agente real si hace falta
@@ -485,7 +522,7 @@ class ApiRequestHandler(RequestHandler):
                 conversation_history = self.event.body["message"]
                 last_message = self.event.body["message"]
             else:
-                self.logger.info("[SOURCE] Evento recibido desde FrontEndss")
+                self.logger.info("[SOURCE] Evento recibido desde FrontEnd")
                 conversation_history = self.event.body.get('conversationHistory', [])
                 last_message = conversation_history[-1]['content']
 
