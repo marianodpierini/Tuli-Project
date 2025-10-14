@@ -518,6 +518,7 @@ class ApiRequestHandler(RequestHandler):
 
             source = self.event.source
             if "whatsapp" in source:
+                self.send_whatsapp("Estamos procesando tu pregunta...")
                 self.logger.info("[SOURCE] Evento recibido desde WhatsApp")
                 conversation_history = self.event.body["message"]
                 last_message = self.event.body["message"]

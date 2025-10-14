@@ -82,6 +82,8 @@ class ScheduledHandler:
 
                     Por favor responde al usuario en lenguaje natural, breve y clara,
                     usando los resultados de la consulta, utiliza su apodo que es {apodo}.
+
+                    Utiliza un lenguaje mas relajado, no tan formal.
                     """
         
         params = {
