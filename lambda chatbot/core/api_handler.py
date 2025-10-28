@@ -36,6 +36,12 @@ CONTEXT_DEPENDENT_PHRASES = {
         "ahora", "después", "también", "además"
     }
 
+
+KEYWORDS_USER_CONTEXT = [
+        "mis", "mi", "yo", "voy", "hice", "hago", "personales", "personal"
+        "objetivos",
+    ]
+
 dynamodb = boto3.resource('dynamodb')
 user_questions_table = dynamodb.Table('user_questions_table')
 user_table = dynamodb.Table('users_notifications_table')
@@ -85,6 +91,7 @@ class ApiRequestHandler(RequestHandler):
         work_area = None
         canal = ""
         nickname = ""
+        name = ""
 
         if token:
             decoded = jwt.decode(token, options={"verify_signature": False})
@@ -97,13 +104,14 @@ class ApiRequestHandler(RequestHandler):
             canal = "frontend"
 
             response = user_table.scan(
-                ProjectionExpression="apodo, contexto_usuario",
+                ProjectionExpression="apodo, contexto_usuario, nombre",
                 FilterExpression=Attr("email").eq(user_email)
             )
 
             items = response.get("Items", [])
 
-            nickname = items[0]["apodo"]
+            nickname = items[0]["apodo"] if items else None
+            name = items[0]["nombre"]
 
         source = self.event.source
         if "whatsapp" in source and session_id is None:
@@ -113,13 +121,14 @@ class ApiRequestHandler(RequestHandler):
             canal = "whatsapp"
 
             response = user_table.scan(
-                ProjectionExpression="apodo, contexto_usuario",
+                ProjectionExpression="apodo, contexto_usuario, nombre",
                 FilterExpression=Attr("num_telefono").eq(from_num)
             )
 
             items = response.get("Items", [])
 
-            nickname = items[0]["apodo"]
+            nickname = items[0]["apodo"] if items else None
+            name = items[0]["nombre"]
 
         if not session_id:
             session_id = str(uuid.uuid4())[:8]
@@ -148,7 +157,7 @@ class ApiRequestHandler(RequestHandler):
 
         session_id_validated = self.validate_user_session(session_id, canal, 30)
         
-        user_context = EnhancedUserContext(user_id, session_id_validated, ip_address, user_agent, user_email, username, nickname, work_area, UserActivityTracker(self.logger))
+        user_context = EnhancedUserContext(user_id, session_id_validated, ip_address, user_agent, user_email, username, nickname, name, work_area, UserActivityTracker(self.logger))
         
         # Registrar inicio de sesión
         self.user_logger.log_user_session_event(user_context, "SESSION_START", {
@@ -415,9 +424,19 @@ class ApiRequestHandler(RequestHandler):
 
         # 7. Construcción de parámetros - CAMBIO: Agregamos parámetros de control
 
-        last_message += f"""
-            Utiliza el apodo del usuario para responder, el cual es {self.user_context.nickname}
-        """
+        keywords_user = [kw for kw in last_message.split() if kw.lower() in KEYWORDS_USER_CONTEXT]
+
+        if len(keywords_user) >= 1:
+            last_message += f"""
+                El usuario hizo un pregunta personal referente a el.
+                Para armar la respuesta y la query, tene en cuenta su nombre que es {self.user_context.name}.
+                En la query deberas utilizar los campos 'nom_pro_cli' o si este no se encuentra usar 'nom_usu' para filtrar.
+            """
+
+        if self.user_context.nickname is not None:
+            last_message += f"""
+                Utiliza el apodo del usuario para responder, el cual es {self.user_context.nickname}
+            """
         
         params = {
             'agentId': 'DRSOAFDOTR',         # Reemplazá con tu agente real si hace falta
