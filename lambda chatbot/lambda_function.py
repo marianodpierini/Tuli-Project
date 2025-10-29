@@ -72,7 +72,9 @@ def lambda_handler(event, context):
         elif is_rule_event(event):
             logger.debug(f"[{req_id}] Evento tipo Scheduled detectado")
 
-            handler = ScheduledHandler(logger)
+            params = event["message"]["detail"]["users"] if len(event["message"]["detail"]["users"] ) > 0 else None
+
+            handler = ScheduledHandler(logger, params)
             return handler.handle_event()
         else:
             logger.debug(f"[{req_id}] Evento tipo Bedrock detectado")

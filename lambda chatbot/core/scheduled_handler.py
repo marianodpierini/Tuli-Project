@@ -1,5 +1,6 @@
 import json
 import os
+from typing import List, Optional
 import boto3
 import botocore
 import hashlib
@@ -8,6 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import text
 from logging import Logger
 from twilio.rest import Client
+from boto3.dynamodb.conditions import Attr
 
 from core.database.db import SessionLocal
 
@@ -16,7 +18,8 @@ user_table = dynamodb.Table('users_notifications_table')
 users_sessions_table = dynamodb.Table('users_sessions_table')
 
 class ScheduledHandler:
-    def __init__(self, logger: Logger):
+    def __init__(self, logger: Logger, params: Optional[List] = None):
+        self.list_users = params
         self.logger = logger
 
     def validate_user_session(self, session_id, canal, ttl_hours=30):
@@ -51,10 +54,18 @@ class ScheduledHandler:
         )
 
     def get_users(self):
-        response = user_table.scan(
-            ProjectionExpression="nombre, email, frecuencia, num_telefono, querys, ultima_vez, apodo, contexto_usuario"
-        )
-        items = response.get("Items", [])
+        if self.list_users is not None:
+            response = user_table.scan(
+                ProjectionExpression="nombre, email, frecuencia, num_telefono, querys, ultima_vez, apodo, contexto_usuario",
+                FilterExpression=Attr("nombre").is_in(self.list_users)
+            )
+
+            items = response["Items"]
+        else:
+            response = user_table.scan(
+                ProjectionExpression="nombre, email, frecuencia, num_telefono, querys, ultima_vez, apodo, contexto_usuario"
+            )
+            items = response.get("Items", [])
 
         return items
     
