@@ -10,6 +10,8 @@ VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "miverifytoken123")
 
 def lambda_handler(event, context):
     http_method = event.get("httpMethod", "")
+    path = event.get("path", "")
+    print(event)
 
     if http_method == "POST":
         headers = event.get("headers", {})
@@ -47,6 +49,50 @@ def lambda_handler(event, context):
                 "isBase64Encoded": False,
                 "source": "whatsapp"
             }
+
+        elif path.endswith("/google"):
+            try:
+                body_json = json.loads(raw_body)
+                message = (
+                    body_json.get("chat", {})
+                        .get("messagePayload", {})
+                        .get("message", {})
+                        .get("text", "")
+                )
+                sender = (
+                    body_json.get("chat", {})
+                        .get("messagePayload", {})
+                        .get("message", {})
+                        .get("sender", {})
+                )
+                sender_email = sender.get("email", "")
+                sender_name = sender.get("displayName", "")
+
+                message_payload = body_json.get("chat", {}).get("messagePayload", {})
+                message_obj = message_payload.get("message", {})
+                space_name = message_obj.get("space", {}).get("name", "")
+                thread_name = message_obj.get("thread", {}).get("name", "")
+
+                enriched_event = {
+                    "resource": "/webhooks/google",
+                    "path": "/webhooks/google",
+                    "httpMethod": "POST",
+                    "headers": headers,
+                    "requestContext": event.get("requestContext", {}),
+                    "body": json.dumps({
+                        "text": message,
+                        "name": sender_name,
+                        "email": sender_email,
+                        "space_name": space_name,
+                        "thread_name": thread_name,
+                        "raw": body_json,
+                    }),
+                    "isBase64Encoded": False,
+                    "source": "google_chat"
+                }
+            except Exception as e:
+                print(f"Error procesando cuerpo de Google Chat: {e}")
+                return {"statusCode": 400, "body": "Invalid Google Chat body"}
 
         else:
             enriched_event = dict(event)

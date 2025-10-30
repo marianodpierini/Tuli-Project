@@ -7,6 +7,7 @@ import botocore
 import uuid
 import jwt
 import hashlib
+import requests
 from boto3.dynamodb.conditions import Attr
 
 from datetime import datetime
@@ -14,6 +15,8 @@ from logging import Logger
 
 from sqlalchemy import any_, and_, text
 from twilio.rest import Client
+from google.oauth2 import service_account
+import google.auth.transport.requests
 
 from core.improved_context_classes import EnhancedUserContext, UserActivityTracker, CustomJSONEncoder
 from core.request_handler import APIGatewayModel, RequestHandler
@@ -64,6 +67,29 @@ class ApiRequestHandler(RequestHandler):
             body=text
         )
 
+    def get_chat_token(self):
+        service_account_info = json.loads(os.environ["GOOGLE_CHAT_SERVICE"],)
+        creds = service_account.Credentials.from_service_account_info(
+            service_account_info,
+            scopes=["https://www.googleapis.com/auth/chat.bot"]
+        )
+        request = google.auth.transport.requests.Request()
+        creds.refresh(request)
+        return creds.token
+
+    def send_google_chat_message(self, space_name, text):
+        token = self.get_chat_token()
+        url = f"https://chat.googleapis.com/v1/{space_name}/messages"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        body = {"text": text}
+        r = requests.post(url, headers=headers, json=body)
+        if r.status_code != 200:
+            print("Error al enviar mensaje:", r.text)
+        return r.json()
+
     def format_response_for_api(self, resource, http_method, status_code, data, request_context):
         json_body = json.dumps(data, cls=CustomJSONEncoder)
         return {
@@ -92,8 +118,9 @@ class ApiRequestHandler(RequestHandler):
         canal = ""
         nickname = ""
         name = ""
+        source = self.event.source
 
-        if token:
+        if token and source not in ["whatsapp", "google_chat"]:
             decoded = jwt.decode(token, options={"verify_signature": False})
 
             user_email = decoded.get("email")
@@ -113,7 +140,6 @@ class ApiRequestHandler(RequestHandler):
             nickname = items[0]["apodo"] if items else None
             name = items[0]["nombre"]
 
-        source = self.event.source
         if "whatsapp" in source and session_id is None:
             from_num = self.event.body["from"]
             key = f"{from_num}_whatsapp"
@@ -123,6 +149,23 @@ class ApiRequestHandler(RequestHandler):
             response = user_table.scan(
                 ProjectionExpression="apodo, contexto_usuario, nombre",
                 FilterExpression=Attr("num_telefono").eq(from_num)
+            )
+
+            items = response.get("Items", [])
+
+            nickname = items[0]["apodo"] if items else None
+            name = items[0]["nombre"]
+
+        if "google_chat" in source and session_id is None:
+            canal = "google_chat"
+            user_email = self.event.body["email"]
+
+            key = f"{user_email}_google"
+            session_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+            response = user_table.scan(
+                ProjectionExpression="apodo, contexto_usuario, nombre",
+                FilterExpression=Attr("email").eq(user_email)
             )
 
             items = response.get("Items", [])
@@ -354,7 +397,7 @@ class ApiRequestHandler(RequestHandler):
 
         # 1. Extrae el último mensaje
         source = self.event.source
-        if "whatsapp" in source:
+        if "whatsapp" or "google_chat" in source:
             last_message = conversation_history
         else:
             last_message = conversation_history[-1]['content']
@@ -541,6 +584,11 @@ class ApiRequestHandler(RequestHandler):
                 self.logger.info("[SOURCE] Evento recibido desde WhatsApp")
                 conversation_history = self.event.body["message"]
                 last_message = self.event.body["message"]
+            elif "google_chat" in source:
+                self.send_google_chat_message(self.event.body["space_name"], "Estamos procesando tu pregunta...")
+                self.logger.info("[SOURCE] Evento recibido desde Google Chat")
+                conversation_history = self.event.body["text"]
+                last_message = self.event.body["text"]
             else:
                 self.logger.info("[SOURCE] Evento recibido desde FrontEnd")
                 conversation_history = self.event.body.get('conversationHistory', [])
@@ -571,6 +619,8 @@ class ApiRequestHandler(RequestHandler):
 
             if "whatsapp" in source:
                 self.send_whatsapp(output_text)
+            elif "google_chat" in source:
+                self.send_google_chat_message(self.event.body["space_name"], output_text)
             else:                
                 return {
                     "statusCode": 200,
