@@ -8,6 +8,7 @@ from core.request_handler import APIGatewayModel, BedrockEvent
 from core.api_handler import ApiRequestHandler
 from core.bedrock_handler import BedrockRequestHandler
 from core.scheduled_handler import ScheduledHandler
+from core.helpers import normalize_event
 
 # Configuración de logging
 logging.basicConfig(
@@ -53,33 +54,34 @@ def lambda_handler(event, context):
     """
     Lambda handler principal con sistema completo de logging por usuarios
     """
-    logger.info(f"EVENT: {json.dumps(event)}")
+    event_normalize = normalize_event(event)
+    logger.info(f"EVENT: {json.dumps(event_normalize)}")
 
     start_time = pytime.time()
 
     # Obtener ID de request para seguimiento
-    req_id = event.get("requestContext", {}).get("requestId", context.aws_request_id)
+    req_id = event_normalize.get("requestContext", {}).get("requestId", context.aws_request_id)
 
     try:
 
-        if is_api_gateway_event(event):
+        if is_api_gateway_event(event_normalize):
             logger.debug(f"[{req_id}] Evento tipo API Gateway detectado")
 
-            event = get_params_api_gateway(event)
+            event = get_params_api_gateway(event_normalize)
             handler = ApiRequestHandler(logger, req_id, event, lambda_handler)
 
             return handler.handle_event()
-        elif is_rule_event(event):
+        elif is_rule_event(event_normalize):
             logger.debug(f"[{req_id}] Evento tipo Scheduled detectado")
 
-            params = event["message"]["detail"]["users"] if len(event["message"]["detail"]["users"] ) > 0 else None
+            params = event_normalize["message"]["detail"]["users"] if len(event_normalize["message"]["detail"]["users"] ) > 0 else None
 
             handler = ScheduledHandler(logger, params)
             return handler.handle_event()
         else:
             logger.debug(f"[{req_id}] Evento tipo Bedrock detectado")
 
-            event = get_params_bedrock(event)
+            event = get_params_bedrock(event_normalize)
             handler = BedrockRequestHandler(logger, req_id, event, lambda_handler)
             
             return handler.handle_event()
