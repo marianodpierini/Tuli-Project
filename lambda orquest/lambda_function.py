@@ -13,4 +13,19 @@ def lambda_handler(event, context):
         Payload=json.dumps(event)
     )
 
-    return {"statusCode": 200, "body": "EVENT_RECEIVED"}
+    raw_body = event.get("body", "")
+    body_json = json.loads(raw_body)
+    message_payload = body_json.get("chat", {}).get("messagePayload", {})
+    message_obj = message_payload.get("message", {})
+
+    response_body = {
+        "text": "Procesando tu solicitud...",
+        "space": message_obj.get("space", {}).get("name", ""),
+        "thread": message_obj.get("thread", {}).get("name", ""),
+    }
+
+    return {
+        "statusCode": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(response_body)
+    }

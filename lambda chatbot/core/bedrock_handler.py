@@ -217,14 +217,29 @@ class BedrockRequestHandler(RequestHandler):
     @lru_cache(maxsize=1)
     def get_schema(self):
         try:     
-            mapper = inspect(ServiciosTcktsRvas)
+            servicios_tckts_rvas_mapper = inspect(ServiciosTcktsRvas)
+            suggested_questions_mapper = inspect(SuggestedQuestions)
+
             schema = {
-                "table_name": ServiciosTcktsRvas.__tablename__,
-                "columns": {}
+                "servicios_tckts_rvas_schema": {
+                    "table_name": ServiciosTcktsRvas.__tablename__,
+                    "columns": {}
+                },
+                "suggested_questions_schema": {
+                    "table_name": SuggestedQuestions.__tablename__,
+                    "columns": {}
+                },
             }
 
-            for column in mapper.columns:
-                schema["columns"][column.name] = {
+            for column in servicios_tckts_rvas_mapper.columns:
+                schema["servicios_tckts_rvas_schema"]["columns"][column.name] = {
+                    "type": str(column.type),
+                    "nullable": column.nullable,
+                    "default": str(column.default.arg) if column.default is not None else None,
+                }
+
+            for column in suggested_questions_mapper.columns:
+                schema["suggested_questions_schema"]["columns"][column.name] = {
                     "type": str(column.type),
                     "nullable": column.nullable,
                     "default": str(column.default.arg) if column.default is not None else None,

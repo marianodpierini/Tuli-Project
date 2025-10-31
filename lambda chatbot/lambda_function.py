@@ -8,7 +8,7 @@ from core.request_handler import APIGatewayModel, BedrockEvent
 from core.api_handler import ApiRequestHandler
 from core.bedrock_handler import BedrockRequestHandler
 from core.scheduled_handler import ScheduledHandler
-from core.helpers import normalize_event
+from core.helpers.helpers import normalize_event
 
 # Configuración de logging
 logging.basicConfig(

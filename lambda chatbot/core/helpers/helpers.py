@@ -2,6 +2,7 @@ import json
 from urllib.parse import parse_qs
 
 def normalize_event(event):
+    enriched_event = event
     http_method = event.get("httpMethod", "")
     path = event.get("path", "")
 
