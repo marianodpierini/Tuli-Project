@@ -585,7 +585,6 @@ class ApiRequestHandler(RequestHandler):
                 conversation_history = self.event.body["message"]
                 last_message = self.event.body["message"]
             elif "google_chat" in source:
-                self.send_google_chat_message(self.event.body["space_name"], "Estamos procesando tu pregunta...")
                 self.logger.info("[SOURCE] Evento recibido desde Google Chat")
                 conversation_history = self.event.body["text"]
                 last_message = self.event.body["text"]

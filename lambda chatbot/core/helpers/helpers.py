@@ -45,25 +45,19 @@ def normalize_event(event):
         
         elif path.endswith("/google"):
             body_json = json.loads(raw_body)
-            message = (
-                body_json.get("chat", {})
-                    .get("messagePayload", {})
-                    .get("message", {})
-                    .get("text", "")
-            )
+
+            message = body_json.get("text", "")
+            space_name = body_json.get("space", "")
+            thread_name = body_json.get("thread", "")
+
             sender = (
-                body_json.get("chat", {})
-                    .get("messagePayload", {})
+                body_json.get("rawEvent", {})
                     .get("message", {})
                     .get("sender", {})
             )
             sender_email = sender.get("email", "")
             sender_name = sender.get("displayName", "")
 
-            message_payload = body_json.get("chat", {}).get("messagePayload", {})
-            message_obj = message_payload.get("message", {})
-            space_name = message_obj.get("space", {}).get("name", "")
-            thread_name = message_obj.get("thread", {}).get("name", "")
 
             enriched_event = {
                 "resource": "/webhooks/google",
@@ -82,5 +76,7 @@ def normalize_event(event):
                 "isBase64Encoded": False,
                 "source": "google_chat"
             }
+
+            print(enriched_event)
     
     return enriched_event
