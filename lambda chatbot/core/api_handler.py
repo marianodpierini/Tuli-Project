@@ -10,7 +10,7 @@ import hashlib
 import requests
 from boto3.dynamodb.conditions import Attr
 
-from datetime import datetime
+from datetime import datetime, date
 from logging import Logger
 
 from sqlalchemy import any_, and_, text
@@ -45,9 +45,13 @@ KEYWORDS_USER_CONTEXT = [
         "objetivos",
     ]
 
+
+LIMITE_TOKENS_DIARIO = 550000
+
 dynamodb = boto3.resource('dynamodb')
 user_questions_table = dynamodb.Table('user_questions_table')
 user_table = dynamodb.Table('users_notifications_table')
+usage_table = dynamodb.Table("user_usage_tokens")
 
 class ApiRequestHandler(RequestHandler):
     def __init__(self, logger: Logger, req_id: str, event: APIGatewayModel, lambda_handler):
@@ -89,6 +93,21 @@ class ApiRequestHandler(RequestHandler):
         if r.status_code != 200:
             print("Error al enviar mensaje:", r.text)
         return r.json()
+    
+    def validate_use_tokens(self):
+
+        response = usage_table.get_item(Key={"user_id": self.user_context.session_id})
+        item = response.get("Item")
+
+        if not item:
+            return True
+
+        limite = item.get("limite_tokens", LIMITE_TOKENS_DIARIO)
+
+        if item["tokens_usados"] > limite:
+            return False
+        
+        return True
 
     def format_response_for_api(self, resource, http_method, status_code, data, request_context):
         json_body = json.dumps(data, cls=CustomJSONEncoder)
@@ -486,7 +505,7 @@ class ApiRequestHandler(RequestHandler):
             'agentAliasId': 'XKJTFFEMPC',    # Reemplazá si tenés otro alias
             'sessionId': session_id,
             'inputText': last_message,
-            'enableTrace': False,
+            'enableTrace': True,
             # 'sessionState': {
             #     "sessionAttributes": {
             #         "suggestion_id": str(new_q_id) if new_q_id else None
@@ -510,6 +529,43 @@ class ApiRequestHandler(RequestHandler):
                             assistant_response += chunk_data
                         except Exception as decode_error:
                             self.logger.error(f"Error decodificando chunk: {decode_error}")
+
+                    if 'trace' in event:
+                        trace_data = event['trace'].get('trace', {}).get('orchestrationTrace', {})
+                        if 'modelInvocationOutput' in trace_data:
+                            usage = (
+                                trace_data.get("modelInvocationOutput", {})
+                                .get("metadata", {})
+                                .get("usage", {})
+                            )
+                            total = usage.get("inputTokens", 0) + usage.get("outputTokens", 0)
+
+                            response = usage_table.get_item(Key={"user_id": self.user_context.session_id})
+                            item = response.get("Item")
+                            if not item:
+                                usage_table.put_item(Item={
+                                    "user_id": self.user_context.session_id,
+                                    "tokens_usados": total,
+                                    "fecha_ultimo_uso": str(date.today()),
+                                    "limite_tokens": LIMITE_TOKENS_DIARIO,
+                                    "channel": source
+                                })
+                            else:
+                                hoy = str(date.today())
+                                if item["fecha_ultimo_uso"] != hoy:
+                                    item["tokens_usados"] = 0
+                                    item["fecha_ultimo_uso"] = hoy
+
+                                nuevo_total = item["tokens_usados"] + total
+
+                                usage_table.update_item(
+                                    Key={"user_id": self.user_context.session_id},
+                                    UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
+                                    ExpressionAttributeValues={
+                                        ":nuevo": nuevo_total,
+                                        ":fecha": hoy
+                                    }
+                                )
             else:
                 self.logger.error(f"Tipo inesperado en 'completion': {type(event_stream)}")
 
@@ -576,15 +632,26 @@ class ApiRequestHandler(RequestHandler):
                     "sessionId": self.user_context.session_id
                 })
             }
+
+            validate_tokens = self.validate_use_tokens()
                 
 
             source = self.event.source
             if "whatsapp" in source:
                 self.send_whatsapp("Estamos procesando tu pregunta...")
+
+                if not validate_tokens:
+                    self.send_whatsapp("Alcanzaste el limite de tokens por el dia de hoy...")
+                    return True
+
                 self.logger.info("[SOURCE] Evento recibido desde WhatsApp")
                 conversation_history = self.event.body["message"]
                 last_message = self.event.body["message"]
             elif "google_chat" in source:
+                if not validate_tokens:
+                    self.send_google_chat_message(self.event.body["space_name"], "Alcanzaste el limite de tokens por el dia de hoy...")
+                    return True
+
                 self.logger.info("[SOURCE] Evento recibido desde Google Chat")
                 conversation_history = self.event.body["text"]
                 last_message = self.event.body["text"]
