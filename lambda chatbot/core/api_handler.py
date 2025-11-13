@@ -122,6 +122,7 @@ class ApiRequestHandler(RequestHandler):
         canal = ""
         nickname = ""
         name = ""
+        from_num = None
         source = self.event.source
 
         if token and source not in ["whatsapp", "google_chat"]:
@@ -422,11 +423,13 @@ class ApiRequestHandler(RequestHandler):
         if not self.is_message_valid(last_message):
             return "Mensaje contiene contenido no permitido.", None
         
+        input_to_metrics = last_message
+        
         self.save_user_question(last_message)
 
         keywords = [kw for kw in last_message.split() if kw.lower() not in STOP_WORDS]
 
-        validation = self.valite_existing_response(session_id, keywords, last_message)
+        #validation = self.valite_existing_response(session_id, keywords, last_message)
         
         new_q_id = None
 
@@ -507,7 +510,9 @@ class ApiRequestHandler(RequestHandler):
             event_stream = response.get('completion')
             
             if isinstance(event_stream, botocore.eventstream.EventStream):
-                total_time_ms = 0
+                total_ms = 0
+                total_tokens = 0
+                total_steps = 0
                 for event in event_stream:
                     if 'chunk' in event:
                         try:
@@ -519,8 +524,19 @@ class ApiRequestHandler(RequestHandler):
                     if 'trace' in event:
                         trace_data = event['trace'].get('trace', {}).get('orchestrationTrace', {})
                         if 'modelInvocationOutput' in trace_data:
-                            total_time_ms += int(trace_data.get("modelInvocationOutput", {}).get("metadata", {}).get("totalTimeMs", 0))
                             self.user_context.update_use_tokens(trace_data, source)
+
+                            total_ms += int(trace_data.get("modelInvocationOutput", {}).get("metadata", {}).get("totalTimeMs", 0))
+                            usage = (
+                                trace_data.get("modelInvocationOutput", {})
+                                .get("metadata", {})
+                                .get("usage", {})
+                            )
+                            total = usage.get("inputTokens", 0) + usage.get("outputTokens", 0)
+                            total_tokens += total
+                            total_steps += 1
+
+                self.user_context.metrics_questions(total_ms, total_tokens, total_steps, input_to_metrics)
             else:
                 self.logger.error(f"Tipo inesperado en 'completion': {type(event_stream)}")
 
@@ -636,7 +652,7 @@ class ApiRequestHandler(RequestHandler):
         
             
             output_text = self.process_conversation_with_bedrock(conversation_history, self.user_context.session_id)
-            suggested_questions = self.get_active_suggestions(last_message)
+            #suggested_questions = self.get_active_suggestions(last_message)
 
             if "whatsapp" in source:
                 self.send_whatsapp(output_text)
@@ -649,7 +665,7 @@ class ApiRequestHandler(RequestHandler):
                     "body": json.dumps({
                         "outputText": output_text,
                         "sessionId": self.user_context.session_id,
-                        "suggestions": suggested_questions
+                        #"suggestions": suggested_questions
                     })
                 }
 

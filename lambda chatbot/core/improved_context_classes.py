@@ -23,6 +23,7 @@ PROHIBITED_KEYWORDS = ["insert", "update", "delete", "drop", "alter", "truncate"
 LIMITE_TOKENS_DIARIO = 550000
 dynamodb = boto3.resource('dynamodb')
 usage_table = dynamodb.Table("user_usage_tokens")
+metrics_table = dynamodb.Table("questions_metrics")
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -147,68 +148,10 @@ class EnhancedQueryManager:
         
         return query
 
-
-class UserSessionStore:
-    """Almacén persistente de sesiones de usuario usando DynamoDB"""
-    
-    def __init__(self, logger: Logger, table_name='lambda_user_sessions'):
-        self.dynamodb = boto3.resource('dynamodb')
-        self.table_name = table_name
-        self.table = None
-        self.logger = logger
-        self._initialize_table()
-    
-    def _initialize_table(self):
-        """Inicializa la tabla de DynamoDB (la crea si no existe)"""
-        try:
-            self.table = self.dynamodb.Table(self.table_name)
-            # Verificar que la tabla existe
-            self.table.load()
-            self.logger.info(f"Tabla DynamoDB '{self.table_name}' encontrada")
-        except Exception as e:
-            self.logger.warning(f"Tabla DynamoDB no disponible: {str(e)}")
-            # Si no hay DynamoDB, usar almacenamiento en memoria
-            self.table = None
-    
-    def save_session_data(self, user_hash: str, session_data: dict):
-        """Guarda datos de sesión en DynamoDB"""
-        if not self.table:
-            return False
-        
-        try:
-            item = {
-                'user_hash': user_hash,
-                'session_data': json.dumps(session_data, default=str),
-                'last_updated': datetime.now().isoformat(),
-                'ttl': int((datetime.now() + timedelta(days=30)).timestamp())  # TTL de 30 días
-            }
-            
-            self.table.put_item(Item=item)
-            return True
-        except Exception as e:
-            self.logger.error(f"Error guardando sesión en DynamoDB: {str(e)}")
-            return False
-    
-    def load_session_data(self, user_hash: str) -> Optional[dict]:
-        """Carga datos de sesión desde DynamoDB"""
-        if not self.table:
-            return None
-        
-        try:
-            response = self.table.get_item(Key={'user_hash': user_hash})
-            if 'Item' in response:
-                session_data = json.loads(response['Item']['session_data'])
-                return session_data
-            return None
-        except Exception as e:
-            self.logger.error(f"Error cargando sesión desde DynamoDB: {str(e)}")
-            return None
-
 class UserActivityTracker:
     """Tracker avanzado de actividad por usuario con métricas y agregación"""
     
-    def __init__(self, logger: Logger, session_store: UserSessionStore = None):
-        self.session_store = session_store
+    def __init__(self, logger: Logger):
         self.logger = logger
         self.user_activities = defaultdict(lambda: {
             'queries': deque(maxlen=100),  # Últimas 100 queries
@@ -393,19 +336,12 @@ class UserActivityTracker:
                     'unique_queries_count': len(stats['unique_queries'])
                 }
             
-            self.session_store.save_session_data(user_hash, persistent_data)
         except Exception as e:
             self.logger.error(f"Error persistiendo datos de usuario {user_hash}: {str(e)}")
     
     def get_user_summary(self, user_hash: str) -> dict:
         """Obtiene resumen completo de actividad del usuario"""
         user_data = self.user_activities.get(user_hash, {})
-        if not user_data:
-            # Intentar cargar desde persistencia
-            persistent_data = self.session_store.load_session_data(user_hash)
-            if persistent_data:
-                return persistent_data
-            return {"error": "Usuario no encontrado"}
         
         # Calcular estadísticas en tiempo real
         recent_queries = list(user_data['queries'])
@@ -502,7 +438,7 @@ class EnhancedUserContext:
         return self.activity_tracker.get_user_summary(self.get_user_hash())
     
     def update_use_tokens(self, trace_data: dict, source: str):
-        user_id = self.user_email if source == "whatsapp" else self.phone_number
+        user_id = self.user_email if source == "google_chat" else self.phone_number
 
         usage = (
             trace_data.get("modelInvocationOutput", {})
@@ -552,6 +488,16 @@ class EnhancedUserContext:
             return False
         
         return True
+    
+    def metrics_questions(self, total_ms: int, total_tokens: int, total_steps: int, input: str):
+        metrics_table.put_item(Item={
+                "question": input,
+                "tokens": total_tokens,
+                "date_questions": str(date.today()),
+                "steps": total_steps,
+                "total_ms": total_ms
+            })
+
     
 class StructuredUserLogger:
     """Logger estructurado optimizado para CloudWatch con filtros por usuario"""
