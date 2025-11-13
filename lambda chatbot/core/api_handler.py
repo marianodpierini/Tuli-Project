@@ -93,21 +93,6 @@ class ApiRequestHandler(RequestHandler):
         if r.status_code != 200:
             print("Error al enviar mensaje:", r.text)
         return r.json()
-    
-    def validate_use_tokens(self):
-
-        response = usage_table.get_item(Key={"user_id": self.user_context.session_id})
-        item = response.get("Item")
-
-        if not item:
-            return True
-
-        limite = item.get("limite_tokens", LIMITE_TOKENS_DIARIO)
-
-        if item["tokens_usados"] > limite:
-            return False
-        
-        return True
 
     def format_response_for_api(self, resource, http_method, status_code, data, request_context):
         json_body = json.dumps(data, cls=CustomJSONEncoder)
@@ -219,7 +204,7 @@ class ApiRequestHandler(RequestHandler):
 
         session_id_validated = self.validate_user_session(session_id, canal, 30)
         
-        user_context = EnhancedUserContext(user_id, session_id_validated, ip_address, user_agent, user_email, username, nickname, name, work_area, UserActivityTracker(self.logger))
+        user_context = EnhancedUserContext(user_id, session_id_validated, ip_address, user_agent, user_email, username, nickname, from_num, name, work_area, UserActivityTracker(self.logger))
         
         # Registrar inicio de sesión
         self.user_logger.log_user_session_event(user_context, "SESSION_START", {
@@ -522,6 +507,7 @@ class ApiRequestHandler(RequestHandler):
             event_stream = response.get('completion')
             
             if isinstance(event_stream, botocore.eventstream.EventStream):
+                total_time_ms = 0
                 for event in event_stream:
                     if 'chunk' in event:
                         try:
@@ -533,39 +519,8 @@ class ApiRequestHandler(RequestHandler):
                     if 'trace' in event:
                         trace_data = event['trace'].get('trace', {}).get('orchestrationTrace', {})
                         if 'modelInvocationOutput' in trace_data:
-                            usage = (
-                                trace_data.get("modelInvocationOutput", {})
-                                .get("metadata", {})
-                                .get("usage", {})
-                            )
-                            total = usage.get("inputTokens", 0) + usage.get("outputTokens", 0)
-
-                            response = usage_table.get_item(Key={"user_id": self.user_context.session_id})
-                            item = response.get("Item")
-                            if not item:
-                                usage_table.put_item(Item={
-                                    "user_id": self.user_context.session_id,
-                                    "tokens_usados": total,
-                                    "fecha_ultimo_uso": str(date.today()),
-                                    "limite_tokens": LIMITE_TOKENS_DIARIO,
-                                    "channel": source
-                                })
-                            else:
-                                hoy = str(date.today())
-                                if item["fecha_ultimo_uso"] != hoy:
-                                    item["tokens_usados"] = 0
-                                    item["fecha_ultimo_uso"] = hoy
-
-                                nuevo_total = item["tokens_usados"] + total
-
-                                usage_table.update_item(
-                                    Key={"user_id": self.user_context.session_id},
-                                    UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
-                                    ExpressionAttributeValues={
-                                        ":nuevo": nuevo_total,
-                                        ":fecha": hoy
-                                    }
-                                )
+                            total_time_ms += int(trace_data.get("modelInvocationOutput", {}).get("metadata", {}).get("totalTimeMs", 0))
+                            self.user_context.update_use_tokens(trace_data, source)
             else:
                 self.logger.error(f"Tipo inesperado en 'completion': {type(event_stream)}")
 
@@ -633,7 +588,7 @@ class ApiRequestHandler(RequestHandler):
                 })
             }
 
-            validate_tokens = self.validate_use_tokens()
+            validate_tokens = self.user_context.validate_use_tokens()
                 
 
             source = self.event.source

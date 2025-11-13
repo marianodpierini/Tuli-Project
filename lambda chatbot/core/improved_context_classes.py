@@ -20,6 +20,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from core.database.db import SessionLocal
 
 PROHIBITED_KEYWORDS = ["insert", "update", "delete", "drop", "alter", "truncate", "create"]
+LIMITE_TOKENS_DIARIO = 550000
+dynamodb = boto3.resource('dynamodb')
+usage_table = dynamodb.Table("user_usage_tokens")
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -458,7 +461,7 @@ class UserActivityTracker:
 class EnhancedUserContext:
     """UserContext extendido con capacidades de sesión avanzadas"""
     
-    def __init__(self, user_id=None, session_id=None, ip_address=None, user_agent=None, user_email: str=None, username: str=None, nickname: str=None, name: str=None, work_area: str=None, activity_tracker: UserActivityTracker = None):
+    def __init__(self, user_id=None, session_id=None, ip_address=None, user_agent=None, user_email: str=None, username: str=None, nickname: str=None, phone_number: str=None, name: str=None, work_area: str=None, activity_tracker: UserActivityTracker = None):
         self.user_id = user_id or "anonymous"
         self.session_id = session_id
         self.user_email = user_email
@@ -472,6 +475,7 @@ class EnhancedUserContext:
         self.activity_tracker = activity_tracker
         self.nickname = nickname
         self.name = name
+        self.phone_number = phone_number
         
     def get_user_hash(self):
         """Genera un hash del usuario para privacidad"""
@@ -496,6 +500,58 @@ class EnhancedUserContext:
     def get_session_summary(self) -> dict:
         """Obtiene resumen de la sesión actual"""
         return self.activity_tracker.get_user_summary(self.get_user_hash())
+    
+    def update_use_tokens(self, trace_data: dict, source: str):
+        user_id = self.user_email if source == "whatsapp" else self.phone_number
+
+        usage = (
+            trace_data.get("modelInvocationOutput", {})
+            .get("metadata", {})
+            .get("usage", {})
+        )
+        total = usage.get("inputTokens", 0) + usage.get("outputTokens", 0)
+
+        response = usage_table.get_item(Key={"user_id": user_id})
+        item = response.get("Item")
+        if not item:
+            usage_table.put_item(Item={
+                "user_id": user_id,
+                "tokens_usados": total,
+                "fecha_ultimo_uso": str(date.today()),
+                "limite_tokens": LIMITE_TOKENS_DIARIO,
+                "channel": source
+            })
+        else:
+            hoy = str(date.today())
+            if item["fecha_ultimo_uso"] != hoy:
+                item["tokens_usados"] = 0
+                item["fecha_ultimo_uso"] = hoy
+
+            nuevo_total = item["tokens_usados"] + total
+
+            usage_table.update_item(
+                Key={"user_id": user_id},
+                UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
+                ExpressionAttributeValues={
+                    ":nuevo": nuevo_total,
+                    ":fecha": hoy
+                }
+            )
+
+    def validate_use_tokens(self):
+
+        response = usage_table.get_item(Key={"user_id": self.session_id})
+        item = response.get("Item")
+
+        if not item:
+            return True
+
+        limite = item.get("limite_tokens", LIMITE_TOKENS_DIARIO)
+
+        if item["tokens_usados"] > limite:
+            return False
+        
+        return True
     
 class StructuredUserLogger:
     """Logger estructurado optimizado para CloudWatch con filtros por usuario"""
