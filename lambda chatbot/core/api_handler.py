@@ -8,9 +8,10 @@ import uuid
 import jwt
 import hashlib
 import requests
+import time
 from boto3.dynamodb.conditions import Attr
 
-from datetime import datetime, date
+from datetime import datetime
 from logging import Logger
 
 from sqlalchemy import any_, and_, text
@@ -214,66 +215,7 @@ class ApiRequestHandler(RequestHandler):
         })
         
         return user_context
-
-    def is_context_independent_heuristic(self, question: str) -> bool | None:
-        """
-        Devuelve:
-        True  -> seguro independiente
-        False -> seguro dependiente
-        None  -> dudoso, hay que consultar al LLM
-        """
-        q = question.strip().lower()
-
-        if len(q.split()) < 3:
-            return False
-
-        for phrase in CONTEXT_DEPENDENT_PHRASES:
-            if phrase in q:
-                return False
-
-        if q.endswith("?") and len(q) < 10:
-            return False
-
-        if q.startswith(("divididas", "separadas", "por ")):
-            return False
-
-        verbos_comunes = {"son", "fueron", "hubo", "hay", "serán", "tiene", "mostrar", "listar"}
-        if any(v in q for v in verbos_comunes):
-            return True
-
-        return None
-
-    def classify_with_bedrock(self, question: str) -> bool:
-        """
-        Usa un LLM en Bedrock para decidir.
-        Devuelve True si es independiente, False si es dependiente.
-        """
-        client = boto3.client("bedrock-runtime", region_name="us-east-1")
-
-        prompt = f"""
-        Dada esta frase del usuario: "{question}"
-
-        Responde SOLO con una palabra: 'independiente' si puede entenderse sola,
-        o 'dependiente' si necesita contexto previo.
-        """
-
-        response = client.invoke_model(
-            modelId="anthropic.claude-3-5-haiku-20241022-v1:0",
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps({
-                "inputText": prompt,
-                "maxTokens": 10,
-                "temperature": 0.0
-            })
-        )
-
-        result = json.loads(response["body"].read())
-        output = result["outputText"].strip().lower()
-
-        return output.startswith("independiente")
-
-    
+  
     def clean_input_text(self, text):
         text = ''.join(filter(str.isprintable, text))
         return text
@@ -324,64 +266,6 @@ class ApiRequestHandler(RequestHandler):
 
         return response
     
-    def valite_existing_response(self, session_id: str, keywords: List[str], user_input: str):
-
-        conditions = [kw == any_(SuggestedQuestions.keywords) for kw in keywords]
-
-        config = botocore.config.Config(
-            connect_timeout=30,
-            read_timeout=120,  # Aumentar si las respuestas del agente tardan
-            retries={
-                'max_attempts': 3,
-                'mode': 'standard'
-            }
-        )
-
-        client = boto3.client('bedrock-agent-runtime', region_name='us-east-1', config=config)
-
-        with SessionLocal() as session:
-            existing_question = (
-                session.query(SuggestedQuestions)
-                .filter(SuggestedQuestions.activa.is_(True), and_(*conditions))
-                .order_by(SuggestedQuestions.prioridad)
-                .first()
-            )
-
-            if existing_question and existing_question.sql_query is not None:
-                sql_query = existing_question.sql_query
-                query_results = session.execute(text(sql_query))
-
-                query_result_dicts = [dict(row._mapping) for row in query_results]
-
-
-                input_text = f"""
-                    El usuario preguntó: "{user_input}"
-
-                    La consulta SQL asociada (ID {existing_question.id}) devolvió estos resultados:
-                    {json.dumps(query_result_dicts, ensure_ascii=False, indent=2)}
-
-                    Por favor responde al usuario en lenguaje natural, breve y clara,
-                    usando los resultados de la consulta.
-                    """
-                
-                self.logger.info(f"[INFO] Se ha utilizado una pregunta precargada")
-                self.logger.info(f"Mensaje enviado {input_text}")
-
-                params = {
-                    'agentId': 'DRSOAFDOTR',         # Reemplazá con tu agente real si hace falta
-                    'agentAliasId': 'XKJTFFEMPC',    # Reemplazá si tenés otro alias
-                    'sessionId': session_id,
-                    'inputText': input_text,
-                    'enableTrace': False,
-                }
-
-                response = client.invoke_agent(**params)
-
-                return response
-
-            else:
-                return None
-    
     def process_conversation_with_bedrock(self, conversation_history, session_id, db_data=""):
         """
         Envía el último mensaje de 'conversation_history' + un contexto adicional con
@@ -427,49 +311,7 @@ class ApiRequestHandler(RequestHandler):
         
         self.save_user_question(last_message)
 
-        keywords = [kw for kw in last_message.split() if kw.lower() not in STOP_WORDS]
-
-        #validation = self.valite_existing_response(session_id, keywords, last_message)
-        
-        new_q_id = None
-
-        # if validation:
-        #     assistant_response = ""
-        #     event_stream = validation.get('completion')
-            
-        #     if isinstance(event_stream, botocore.eventstream.EventStream):
-        #         for event in event_stream:
-        #             if 'chunk' in event:
-        #                 chunk_data = event['chunk']['bytes'].decode('utf-8')
-        #                 assistant_response += chunk_data
-
-        #     self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
-        #     return assistant_response.strip()
-        # else:
-        #     save_question = False
-
-        #     decision = self.is_context_independent_heuristic(last_message)
-
-        #     if decision is True:
-        #         save_question = True
-        #     elif decision is None:
-        #         if self.classify_with_bedrock(last_message):
-        #             save_question = True
-
-        #     if save_question:
-        #         with SessionLocal() as session:
-        #             new_q = SuggestedQuestions(
-        #                 nombre=last_message,
-        #                 activa=True,
-        #                 keywords=keywords,
-        #             )
-        #             session.add(new_q)
-        #             session.commit()
-
-        #             new_q_id = new_q.id
-
         # 6. Obtiene session_id o genera uno nuevo
-        #session_id = conversation_history[-1].get('sessionId', str(uuid.uuid4()))
         self.logger.info(f"sessionId enviado a Bedrock: {session_id}")
 
         # 7. Construcción de parámetros - CAMBIO: Agregamos parámetros de control
@@ -494,11 +336,6 @@ class ApiRequestHandler(RequestHandler):
             'sessionId': session_id,
             'inputText': last_message,
             'enableTrace': True,
-            # 'sessionState': {
-            #     "sessionAttributes": {
-            #         "suggestion_id": str(new_q_id) if new_q_id else None
-            #     }
-            # }
         }
 
         try:
@@ -536,12 +373,11 @@ class ApiRequestHandler(RequestHandler):
                             total_tokens += total
                             total_steps += 1
 
-                self.user_context.metrics_questions(total_ms, total_tokens, total_steps, input_to_metrics)
             else:
                 self.logger.error(f"Tipo inesperado en 'completion': {type(event_stream)}")
 
             self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
-            return assistant_response.strip()    
+            return assistant_response.strip(), total_ms, total_tokens, total_steps, input_to_metrics
         
         except botocore.exceptions.ReadTimeoutError as e:
             self.logger.error(f"Timeout al invocar agente Bedrock: {str(e)}")
@@ -588,6 +424,7 @@ class ApiRequestHandler(RequestHandler):
     
     def handle_event(self):
         try:
+            start = time.perf_counter()
             first_call = self.event.body.get('firstCall', None)
             if first_call:
                 top_questions = self.get_top_questions()
@@ -651,8 +488,7 @@ class ApiRequestHandler(RequestHandler):
                 }
         
             
-            output_text = self.process_conversation_with_bedrock(conversation_history, self.user_context.session_id)
-            #suggested_questions = self.get_active_suggestions(last_message)
+            output_text, total_ms, total_tokens, total_steps, input_to_metrics = self.process_conversation_with_bedrock(conversation_history, self.user_context.session_id)
 
             if "whatsapp" in source:
                 self.send_whatsapp(output_text)
@@ -665,9 +501,14 @@ class ApiRequestHandler(RequestHandler):
                     "body": json.dumps({
                         "outputText": output_text,
                         "sessionId": self.user_context.session_id,
-                        #"suggestions": suggested_questions
                     })
                 }
+            
+            end = time.perf_counter()
+
+            total_ms_lambda = (end - start) * 1000
+
+            self.user_context.metrics_questions(total_ms, total_tokens, total_steps, input_to_metrics, str(total_ms_lambda).split(".")[0])
 
         except Exception as e:
             self.logger.error(f"Error en API Gateway: {str(e)}")
