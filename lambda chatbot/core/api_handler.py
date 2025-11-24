@@ -1,6 +1,6 @@
 import json
 import os
-from typing import List
+from datetime import date
 import unicodedata
 import boto3
 import botocore
@@ -14,7 +14,6 @@ from boto3.dynamodb.conditions import Attr
 from datetime import datetime
 from logging import Logger
 
-from sqlalchemy import any_, and_, text
 from twilio.rest import Client
 from google.oauth2 import service_account
 import google.auth.transport.requests
@@ -124,6 +123,7 @@ class ApiRequestHandler(RequestHandler):
         nickname = ""
         name = ""
         from_num = None
+        space_name = None
         source = self.event.source
 
         if token and source not in ["whatsapp", "google_chat"]:
@@ -165,6 +165,7 @@ class ApiRequestHandler(RequestHandler):
         if "google_chat" in source and session_id is None:
             canal = "google_chat"
             user_email = self.event.body["email"]
+            space_name = self.event.body["space_name"]
 
             key = f"{user_email}_google"
             session_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
@@ -175,6 +176,15 @@ class ApiRequestHandler(RequestHandler):
             )
 
             items = response.get("Items", [])
+
+            if "space_name" not in items[0].keys():
+                user_table.update_item(
+                Key={"nombre": items[0]["nombre"]},
+                UpdateExpression="SET space_name = :nuevo",
+                ExpressionAttributeValues={
+                    ":nuevo": space_name,
+                }
+            )
 
             nickname = items[0]["apodo"] if items else None
             name = items[0]["nombre"]
@@ -327,7 +337,8 @@ class ApiRequestHandler(RequestHandler):
 
         if self.user_context.nickname is not None:
             last_message += f"""
-                Utiliza el apodo del usuario para responder, el cual es {self.user_context.nickname}
+                Utiliza el apodo del usuario para responder, el cual es {self.user_context.nickname}.
+                Tene en cuenta para algunas preguntas sobre el dia o fechat actual que hoy es {date.today().isoformat()}
             """
         
         params = {
@@ -439,14 +450,12 @@ class ApiRequestHandler(RequestHandler):
                     ],
                     "sessionId": self.user_context.session_id
                 })
-            }
-
-            validate_tokens = self.user_context.validate_use_tokens()
-                
+            }   
 
             source = self.event.source
+            validate_tokens = self.user_context.validate_use_tokens(source)
             if "whatsapp" in source:
-                self.send_whatsapp("Estamos procesando tu pregunta...")
+                self.send_whatsapp("Estoy pensando en tu consulta...")
 
                 if not validate_tokens:
                     self.send_whatsapp("Alcanzaste el limite de tokens por el dia de hoy...")

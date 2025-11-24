@@ -7,14 +7,16 @@ from datetime import datetime
 from functools import lru_cache
 
 from sqlalchemy.inspection import inspect
-from sqlalchemy import inspect, extract, select, func, update
-from sqlalchemy.dialects import postgresql
+from sqlalchemy import inspect, extract, select, func, update, text
 
 from core.improved_context_classes import EnhancedUserContext, UserActivityTracker, CustomJSONEncoder
 from core.database.db import SessionLocal, engine
 from core.database.models import ServiciosTcktsRvas, SuggestedQuestions
 
 from core.request_handler import RequestHandler
+
+
+ALLOWED_PROCEDURES = ["objetivos_departamentales"]
 
 
 class BedrockRequestHandler(RequestHandler):
@@ -527,6 +529,38 @@ class BedrockRequestHandler(RequestHandler):
                 session_attributes=self.event.session_attributes,
                 prompt_session_attributes=self.event.prompt_session_attributes
             )
+        
+    def handle_stored_procedure(self):
+        content = self.event.request_body["content"]["application/json"]["properties"]
+        procedure = None
+        params = []
+
+        for prop in content:
+            if prop["name"] == "procedure":
+                procedure = prop["value"]
+            elif prop["name"] == "params":
+                params = json.loads(prop["value"])
+        
+
+        if procedure not in ALLOWED_PROCEDURES:
+            return {"error": "Stored procedure no permitido"}
+        
+        placeholders = ",".join([f":p{i}" for i in range(len(params))])
+        sql = text(f"CALL {procedure}({placeholders})")
+
+        param_dict = {f"p{i}": params[i] for i in range(len(params))}
+
+        self.logger.info(f"Ejecutando SP {procedure} con params {params}")
+
+        with SessionLocal() as session:
+            result = session.execute(sql, param_dict)
+
+            try:
+                rows = [dict(r) for r in result]
+            except Exception:
+                rows = []
+
+            return {"results": rows}
     
     def handle_event(self):
         """Handler corregido para Action Groups de Bedrock Agent con logging completo"""
@@ -570,6 +604,8 @@ class BedrockRequestHandler(RequestHandler):
                 response = self.handle_diagnostico()
             elif self.event.api_path == '/diagnostics':
                 response = self.handle_diagnostics()
+            elif self.event.api_path == '/stored_procedure':
+                response = self.handle_stored_procedure()
             else:
                 self.logger.warning(f"[{self.event_id}] Endpoint no reconocido: {self.event.api_path}")
             

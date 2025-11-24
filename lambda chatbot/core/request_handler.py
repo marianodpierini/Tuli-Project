@@ -9,14 +9,14 @@ import time as pytime
 
 from dataclasses import dataclass
 from typing import Dict, Optional, Union, Callable, Any
-from cachetools import TTLCache
+#from cachetools import TTLCache
 from logging import Logger
 
 from core.improved_context_classes import EnhancedUserContext, UserActivityTracker, StructuredUserLogger, CustomJSONEncoder, EnhancedQueryManager, EnhancedQueryExecutor
 
 CACHE_MAX_SIZE = 100
 CACHE_TTL = 3600  # 1 hora
-QUERY_CACHE = TTLCache(maxsize=CACHE_MAX_SIZE, ttl=CACHE_TTL)
+#QUERY_CACHE = TTLCache(maxsize=CACHE_MAX_SIZE, ttl=CACHE_TTL)
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "https://front-app-ia.s3.us-east-1.amazonaws.com",
     "Access-Control-Allow-Credentials": "true",
@@ -93,7 +93,7 @@ class RequestHandler:
             query_timeout_ms=30000
         )
             
-        executor = EnhancedQueryExecutor(self.logger, self.user_logger, query_manager, QUERY_CACHE)
+        executor = EnhancedQueryExecutor(self.logger, self.user_logger, query_manager)
 
         return query_manager, executor
 

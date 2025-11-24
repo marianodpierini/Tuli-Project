@@ -458,11 +458,6 @@ class EnhancedUserContext:
                 "channel": source
             })
         else:
-            hoy = str(date.today())
-            if item["fecha_ultimo_uso"] != hoy:
-                item["tokens_usados"] = 0
-                item["fecha_ultimo_uso"] = hoy
-
             nuevo_total = item["tokens_usados"] + total
 
             usage_table.update_item(
@@ -470,17 +465,33 @@ class EnhancedUserContext:
                 UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
                 ExpressionAttributeValues={
                     ":nuevo": nuevo_total,
-                    ":fecha": hoy
+                    ":fecha": date.today().isoformat()
                 }
             )
 
-    def validate_use_tokens(self):
+    def validate_use_tokens(self, source: str):
 
-        response = usage_table.get_item(Key={"user_id": self.session_id})
+        user_id = self.user_email if source == "google_chat" else self.phone_number
+
+        response = usage_table.get_item(Key={"user_id": user_id})
         item = response.get("Item")
 
         if not item:
             return True
+        
+        hoy = date.today().isoformat()
+        if item["fecha_ultimo_uso"] != hoy:
+            item["tokens_usados"] = 0
+            item["fecha_ultimo_uso"] = hoy
+
+            usage_table.update_item(
+                Key={"user_id": user_id},
+                UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
+                ExpressionAttributeValues={
+                    ":nuevo": item["tokens_usados"],
+                    ":fecha": item["fecha_ultimo_uso"]
+                }
+            )
 
         limite = item.get("limite_tokens", LIMITE_TOKENS_DIARIO)
 
@@ -589,11 +600,10 @@ class StructuredUserLogger:
 class EnhancedQueryExecutor:
     """QueryExecutor mejorado con logging completo por usuario"""
     
-    def __init__(self, logger: Logger, user_logger: StructuredUserLogger, validator, cache):
+    def __init__(self, logger: Logger, user_logger: StructuredUserLogger, validator):
         self.logger = logger
         self.user_logger = user_logger
         self.validator = validator
-        self.cache = cache
         self.cloudwatch = boto3.client('cloudwatch')
         self.query_corrections = {}
 
@@ -632,51 +642,15 @@ class EnhancedQueryExecutor:
 
             self.logg_querys(query, "Query SQL Original", query_id)
         
-            # Verificar caché
-            if query in self.cache:
-                cache_hit = True
-                results = self.cache[query]
-                execution_time = (pytime.time() - start_time) * 1000
-                
-                # Log con el sistema mejorado
-                self.user_logger.log_user_sql_execution(
-                    user_context, query, execution_time, 
-                    len(results) if isinstance(results, list) else 0, cache_hit=True
-                )
-                
-                self.logger.info(f"[{query_id}][{user_context.get_user_hash()}] Cache hit!")
-                
-                return {"results": results, "cache_hit": True}
-        
-            # Verificar consultas corregidas anteriormente
-            if hasattr(self, 'query_corrections') and query in self.query_corrections:
-                corrected_query = self.query_corrections[query]
-                self.logg_querys(corrected_query, "Query SQL Corregida", query_id)
+            # Procesar y validar la consulta
+            processed_query = self.validator.validate_stage1(query)
+            corrected_query = self.validator.validate_stage2(processed_query)
             
-                if corrected_query in self.cache:
-                    cache_hit = True
-                    results = self.cache[corrected_query]
-                    execution_time = (pytime.time() - start_time) * 1000
-                    
-                    self.user_logger.log_user_sql_execution(
-                        user_context, corrected_query, execution_time, 
-                        len(results) if isinstance(results, list) else 0, cache_hit=True
-                    )
-                    
-                    self.logger.info(f"[{query_id}][{user_context.get_user_hash()}] Cache hit de consulta corregida!")
-                    return {"results": results, "cache_hit": True}
-            
-                query = corrected_query
-            else:
-                # Procesar y validar la consulta
-                processed_query = self.validator.validate_stage1(query)
-                corrected_query = self.validator.validate_stage2(processed_query)
-            
-                # Guardar la corrección
-                if not hasattr(self, 'query_corrections'):
-                    self.query_corrections = {}
-                self.query_corrections[query] = corrected_query
-                query = corrected_query
+            # Guardar la corrección
+            if not hasattr(self, 'query_corrections'):
+                self.query_corrections = {}
+            self.query_corrections[query] = corrected_query
+            query = corrected_query
         
             self.logg_querys(query, "Query SQL Validada", query_id)
 
@@ -708,11 +682,6 @@ class EnhancedQueryExecutor:
                     for key, value in row.items():
                         if isinstance(value, str) and len(value) > 1000:
                             row[key] = value[:1000] + "..."
-
-                # Guardar en caché
-                self.cache[original_query] = results
-                if original_query != query:
-                    self.cache[query] = results
                 
                 total_execution_time = (pytime.time() - start_time) * 1000
                 
