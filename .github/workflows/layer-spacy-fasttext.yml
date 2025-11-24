@@ -39,10 +39,10 @@ jobs:
           python -m spacy download es_core_news_sm
           # mover el modelo dentro de la layer
           mv $(python - <<EOF
-import es_core_news_sm, pathlib
-print(pathlib.Path(es_core_news_sm.__file__).parent)
-EOF
-) python/spacy_models/es_core_news_sm
+          import es_core_news_sm, pathlib
+          print(pathlib.Path(es_core_news_sm.__file__).parent)
+          EOF
+          ) python/spacy_models/es_core_news_sm
 
       - name: Cleanup unnecessary files to reduce size
         run: |
