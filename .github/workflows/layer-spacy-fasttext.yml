@@ -22,10 +22,22 @@ jobs:
           HF_TOKEN: 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
         run: |
           echo "Descargando modelo..."
-          wget https://huggingface.co/valhalla/tiny-similarity/resolve/main/model.onnx -O layer/python/tiny_similarity/model.onnx
-          wget https://huggingface.co/valhalla/tiny-similarity/resolve/main/config.json -O layer/python/tiny_similarity/config.json
-          wget https://huggingface.co/valhalla/tiny-similarity/resolve/main/tokenizer.json -O layer/python/tiny_similarity/tokenizer.json
-          wget https://huggingface.co/valhalla/tiny-similarity/resolve/main/vocab.txt -O layer/python/tiny_similarity/vocab.txt
+          
+          curl -L -H "Authorization: Bearer $HF_TOKEN" \
+            https://huggingface.co/valhalla/tiny-similarity/resolve/main/model.onnx \
+            -o layer/python/tiny_similarity/model.onnx
+
+          curl -L -H "Authorization: Bearer $HF_TOKEN" \
+            https://huggingface.co/valhalla/tiny-similarity/resolve/main/config.json \
+            -o layer/python/tiny_similarity/config.json
+
+          curl -L -H "Authorization: Bearer $HF_TOKEN" \
+            https://huggingface.co/valhalla/tiny-similarity/resolve/main/tokenizer.json \
+            -o layer/python/tiny_similarity/tokenizer.json
+
+          curl -L -H "Authorization: Bearer $HF_TOKEN" \
+            https://huggingface.co/valhalla/tiny-similarity/resolve/main/vocab.txt \
+            -o layer/python/tiny_similarity/vocab.txt
 
       - name: Zip layer
         run: |
