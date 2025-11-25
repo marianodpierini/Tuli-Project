@@ -60,19 +60,14 @@ def lambda_handler(event, context):
 
         event = get_params_api_gateway(event)
 
-        session_id, user_email = get_user_context(event)
+        feedback = event.body.get("text")
+
         
         feedback = {
-            "user_id": user_email,
+            "user_id": event.body.get("user"),
             "feedback_date": datetime.now().isoformat(),
-            "type": event.body.get("type"),
-            "user_question": event.body.get("user_question"),
-            "agent_response": event.body.get("agent_response"),
-            "feedback": event.body.get("feedback"),
-            "comment": event.body.get("comment"),
-            "success": event.body.get("success"),
-            "source": event.body.get("source"),
-            "session_id": session_id
+            "feedback": feedback.split("/feedback")[1],
+            "source": "Google Chat",
         }
 
         logger.info(f"Recibiendo feedback: {json.dumps(feedback)}")
