@@ -40,6 +40,7 @@ jobs:
 
       - name: Download spaCy model
         run: |
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/python
           python -m spacy download es_core_news_sm
           mv $(python - <<EOF
           import es_core_news_sm, pathlib
