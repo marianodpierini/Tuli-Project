@@ -37,16 +37,7 @@ jobs:
         run: |
           pip install spacy==3.7.2 -t python/
           pip install fasttext-wheel==0.9.2 -t python/
-
-      - name: Download spaCy model
-        run: |
-          export PYTHONPATH=$PYTHONPATH:$(pwd)/python
-          python -m spacy download es_core_news_sm
-          mv $(python - <<EOF
-          import es_core_news_sm, pathlib
-          print(pathlib.Path(es_core_news_sm.__file__).parent)
-          EOF
-          ) python/spacy_models/es_core_news_sm
+          pip install https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.7.0/es_core_news_sm-3.7.0-py3-none-any.whl -t python/
 
       - name: Cleanup unnecessary files
         run: |
