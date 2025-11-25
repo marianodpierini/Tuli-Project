@@ -61,5 +61,5 @@ jobs:
         run: |
           aws lambda publish-layer-version \
             --layer-name TinySimilarityONNX \
-            --compatible-runtimes python3.11 \
+            --compatible-runtimes python3.10 \
             --zip-file fileb://tiny_similarity_layer.zip
