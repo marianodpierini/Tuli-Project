@@ -1,83 +1,71 @@
-name: Deploy Tiny-Similarity ONNX Layers
+name: Deploy SimCSE Tiny ONNX Layer
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 jobs:
-  build-layers:
+  build-layer:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      #########################################
-      # LAYER 1: Dependencias minimalistas
-      #########################################
-      - name: Create deps layer folder
-        run: mkdir -p deps_layer/python/
-
-      - name: Install minimal numpy + onnxruntime
+      - name: Create folder structure
         run: |
-          python3 -m pip install --no-cache-dir numpy==1.26.4 --target deps_layer/python/
-          python3 -m pip install --no-cache-dir onnxruntime==1.17.3 --target deps_layer/python/
+          mkdir -p layer/python
+          mkdir -p layer/model
 
-      - name: Cleanup unnecessary files
-        run: |
-          find deps_layer/python/ -name "tests" -type d -exec rm -rf {} +
-          find deps_layer/python/ -name "__pycache__" -type d -exec rm -rf {} +
-          find deps_layer/python/ -name "*.dist-info" -type d -exec rm -rf {} +
-          find deps_layer/python/onnxruntime -type f -size +8000k -delete
-
-      - name: Zip deps layer
-        run: |
-          cd deps_layer
-          zip -r ../tiny_similarity_deps.zip .
-
-
-      #########################################
-      # LAYER 2: Modelo ONNX + Tokenizer
-      #########################################
-      - name: Create model layer folder
-        run: |
-          mkdir -p model_layer/python/tiny_similarity
-
-      - name: Download Tiny-Similarity model
+      - name: Download SimCSE-Tiny ONNX model + tokenizer
         env:
           HF_TOKEN: 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
         run: |
+          echo "Downloading SimCSE Tiny (int8) model..."
+          
           curl -L -H "Authorization: Bearer $HF_TOKEN" \
-            https://huggingface.co/valhalla/tiny-similarity/resolve/main/model.onnx \
-            -o model_layer/python/tiny_similarity/model.onnx
+            https://huggingface.co/eva00/SimCSE-tiny-roberta/resolve/main/model_int8.onnx \
+            -o layer/model/simcse_tiny.onnx
+
 
           curl -L -H "Authorization: Bearer $HF_TOKEN" \
-            https://huggingface.co/valhalla/tiny-similarity/resolve/main/config.json \
-            -o model_layer/python/tiny_similarity/config.json
+            https://huggingface.co/eva00/SimCSE-tiny-roberta/resolve/main/tokenizer.json \
+            -o layer/model/tokenizer.json
+
 
           curl -L -H "Authorization: Bearer $HF_TOKEN" \
-            https://huggingface.co/valhalla/tiny-similarity/resolve/main/tokenizer.json \
-            -o model_layer/python/tiny_similarity/tokenizer.json
+            https://huggingface.co/eva00/SimCSE-tiny-roberta/resolve/main/vocab.txt \
+            -olayer/model/vocab.txt
 
-          curl -L -H "Authorization: Bearer $HF_TOKEN" \
-            https://huggingface.co/valhalla/tiny-similarity/resolve/main/vocab.txt \
-            -o model_layer/python/tiny_similarity/vocab.txt
-
-      - name: Zip model layer
+      - name: Download ONNX Runtime Lite
         run: |
-          cd model_layer
-          zip -r ../tiny_similarity_model.zip .
+          echo "Downloading onnxruntime-lite wheel..."
 
-      - name: Upload model artifact
+          wget https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/onnxruntime-lite-1.17.3-cp312-cp312-manylinux_2_28_x86_64.whl \
+            -O ort.whl
+
+      - name: Install onnxruntime-lite into layer
+        run: |
+          pip install ort.whl --target layer/python --no-cache-dir
+          rm ort.whl
+
+      - name: Clean unused files (reduces size)
+        run: |
+          find layer/python -name "*.dist-info" -exec rm -rf {} +
+          find layer/python -name "tests" -exec rm -rf {} +
+
+      - name: Zip layer
+        run: |
+          cd layer
+          zip -r ../simcse_tiny_layer.zip .
+
+      - name: Upload artifact (debug)
         uses: actions/upload-artifact@v4
         with:
-          name: tiny_similarity_model.zip
-          path: tiny_similarity_model.zip
+          name: simcse_tiny_layer.zip
+          path: simcse_tiny_layer.zip
 
-      #########################################
-      # Publish both Layers
-      #########################################
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -85,16 +73,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Publish Deps Layer
+      - name: Publish Lambda Layer
         run: |
           aws lambda publish-layer-version \
-            --layer-name TinySimilarityDeps \
-            --compatible-runtimes python3.10 \
-            --zip-file fileb://tiny_similarity_deps.zip
-
-      - name: Publish Model Layer
-        run: |
-          aws lambda publish-layer-version \
-            --layer-name TinySimilarityModel \
-            --compatible-runtimes python3.10 \
-            --zip-file fileb://tiny_similarity_model.zip
+            --layer-name SimCSE-Tiny-ONNX \
+            --compatible-runtimes python3.12 \
+            --zip-file fileb://simcse_tiny_layer.zip
