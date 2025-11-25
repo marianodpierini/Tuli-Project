@@ -18,6 +18,8 @@ jobs:
           mkdir -p layer/python/tiny_similarity
 
       - name: Download Tiny-Similarity ONNX model
+        env:
+          HF_TOKEN: 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
         run: |
           echo "Descargando modelo..."
           wget https://huggingface.co/valhalla/tiny-similarity/resolve/main/model.onnx -O layer/python/tiny_similarity/model.onnx
