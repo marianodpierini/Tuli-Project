@@ -71,5 +71,5 @@ jobs:
         run: |
           aws lambda publish-layer-version \
             --layer-name SimCSE-Tiny-ONNX \
-            --compatible-runtimes python3.12 \
+            --compatible-runtimes python3.10 \
             --zip-file fileb://simcse_tiny_layer.zip
