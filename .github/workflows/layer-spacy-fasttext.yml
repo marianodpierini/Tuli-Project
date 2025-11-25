@@ -14,28 +14,28 @@ jobs:
         uses: actions/checkout@v3
 
       #########################################
-      # LAYER 1: Dependencias (numpy + onnxruntime)
+      # LAYER 1: Dependencias minimalistas
       #########################################
       - name: Create deps layer folder
-        run: |
-          mkdir -p deps_layer/python/
+        run: mkdir -p deps_layer/python/
 
-      - name: Install numpy + onnxruntime
+      - name: Install minimal numpy + onnxruntime
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install numpy --target deps_layer/python/
-          python3 -m pip install onnxruntime --target deps_layer/python/
+          python3 -m pip install --no-cache-dir numpy==1.26.4 --target deps_layer/python/
+          python3 -m pip install --no-cache-dir onnxruntime==1.16.3 --target deps_layer/python/
+
+      - name: Cleanup unnecessary files
+        run: |
+          find deps_layer/python/ -name "tests" -type d -exec rm -rf {} +
+          find deps_layer/python/ -name "__pycache__" -type d -exec rm -rf {} +
+          find deps_layer/python/ -name "*.dist-info" -type d -exec rm -rf {} +
+          find deps_layer/python/onnxruntime -type f -size +8000k -delete
 
       - name: Zip deps layer
         run: |
           cd deps_layer
           zip -r ../tiny_similarity_deps.zip .
 
-      - name: Upload deps artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tiny_similarity_deps.zip
-          path: tiny_similarity_deps.zip
 
       #########################################
       # LAYER 2: Modelo ONNX + Tokenizer
