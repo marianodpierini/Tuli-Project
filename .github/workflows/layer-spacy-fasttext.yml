@@ -38,19 +38,13 @@ jobs:
             https://huggingface.co/eva00/SimCSE-tiny-roberta/resolve/main/vocab.txt \
             -olayer/model/vocab.txt
 
-      - name: Download ONNX Runtime Lite
+      - name: Install onnxruntime into layer
         run: |
-          echo "Downloading onnxruntime-lite wheel..."
+          pip install onnxruntime==1.17.3 \
+            --target layer/python \
+            --no-cache-dir
 
-          wget https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/onnxruntime-lite-1.17.3-cp312-cp312-manylinux_2_28_x86_64.whl \
-            -O ort.whl
-
-      - name: Install onnxruntime-lite into layer
-        run: |
-          pip install ort.whl --target layer/python --no-cache-dir
-          rm ort.whl
-
-      - name: Clean unused files (reduces size)
+      - name: Clean unnecessary files
         run: |
           find layer/python -name "*.dist-info" -exec rm -rf {} +
           find layer/python -name "tests" -exec rm -rf {} +
@@ -60,7 +54,7 @@ jobs:
           cd layer
           zip -r ../simcse_tiny_layer.zip .
 
-      - name: Upload artifact (debug)
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: simcse_tiny_layer.zip
