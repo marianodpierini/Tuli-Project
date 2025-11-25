@@ -1,62 +1,51 @@
-name: Build Lambda Layer - Spacy + FastText
+name: Deploy Tiny-Similarity ONNX Layer
 
 on:
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
   build-layer:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install system dependencies for spaCy & fastText
+      - name: Create folder structure
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential
-          sudo apt-get install -y libffi-dev libxml2-dev libxslt1-dev
-          sudo apt-get install -y zlib1g-dev libbz2-dev liblzma-dev
-          sudo apt-get install -y libopenblas-dev liblapack-dev
-          sudo apt-get install -y python3-dev
+          mkdir -p layer/python/tiny_similarity
 
-      - name: Create folder structure for Lambda layer
+      - name: Download Tiny-Similarity ONNX model
         run: |
-          mkdir -p python
-          mkdir -p python/spacy_models
+          echo "Descargando modelo..."
+          wget https://huggingface.co/valhalla/tiny-similarity/resolve/main/model.onnx -O layer/python/tiny_similarity/model.onnx
+          wget https://huggingface.co/valhalla/tiny-similarity/resolve/main/config.json -O layer/python/tiny_similarity/config.json
+          wget https://huggingface.co/valhalla/tiny-similarity/resolve/main/tokenizer.json -O layer/python/tiny_similarity/tokenizer.json
+          wget https://huggingface.co/valhalla/tiny-similarity/resolve/main/vocab.txt -O layer/python/tiny_similarity/vocab.txt
 
-      - name: Install Python dependencies into layer directory
+      - name: Zip layer
         run: |
-          pip install spacy==3.7.2 -t python/
-          pip install fasttext==0.9.2 -t python/
+          cd layer
+          zip -r ../tiny_similarity_layer.zip .
 
-      - name: Download spaCy model (es_core_news_sm)
-        run: |
-          python -m spacy download es_core_news_sm
-          # mover el modelo dentro de la layer
-          mv $(python - <<EOF
-          import es_core_news_sm, pathlib
-          print(pathlib.Path(es_core_news_sm.__file__).parent)
-          EOF
-          ) python/spacy_models/es_core_news_sm
-
-      - name: Cleanup unnecessary files to reduce size
-        run: |
-          find python/ -type d -name "__pycache__" -exec rm -r {} +
-          find python/ -type d -name "tests" -exec rm -r {} +
-          rm -rf python/*.dist-info
-          rm -rf python/*.egg-info      
-
-      - name: Zip the layer
-        run: |
-          zip -r spacy_fasttext_layer.zip python/
-
-      - name: Upload ZIP as artifact
+      - name: Upload zip as workflow artifact (debug)
         uses: actions/upload-artifact@v4
         with:
-          name: spacy-fasttext-layer
-          path: spacy_fasttext_layer.zip
+          name: tiny_similarity_layer.zip
+          path: tiny_similarity_layer.zip
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Publish Lambda Layer
+        run: |
+          aws lambda publish-layer-version \
+            --layer-name TinySimilarityONNX \
+            --compatible-runtimes python3.11 \
+            --zip-file fileb://tiny_similarity_layer.zip
