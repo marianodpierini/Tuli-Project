@@ -1,4 +1,4 @@
-name: Deploy Tiny-Similarity ONNX Layer
+name: Deploy Tiny-Similarity ONNX Layers
 
 on:
   push:
@@ -6,72 +6,78 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-layer:
+  build-layers:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      # ----------------------
-      # Crear estructura base
-      # ----------------------
-      - name: Create folder structure
+      #########################################
+      # LAYER 1: Dependencias (numpy + onnxruntime)
+      #########################################
+      - name: Create deps layer folder
         run: |
-          mkdir -p layer/python/tiny_similarity
+          mkdir -p deps_layer/python/
 
-      # ----------------------------------------------
-      # Descargar modelo Tiny-Similarity (ONNX + tokenizer)
-      # ----------------------------------------------
-      - name: Download Tiny-Similarity ONNX model
+      - name: Install numpy + onnxruntime
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install numpy --target deps_layer/python/
+          python3 -m pip install onnxruntime --target deps_layer/python/
+
+      - name: Zip deps layer
+        run: |
+          cd deps_layer
+          zip -r ../tiny_similarity_deps.zip .
+
+      - name: Upload deps artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiny_similarity_deps.zip
+          path: tiny_similarity_deps.zip
+
+      #########################################
+      # LAYER 2: Modelo ONNX + Tokenizer
+      #########################################
+      - name: Create model layer folder
+        run: |
+          mkdir -p model_layer/python/tiny_similarity
+
+      - name: Download Tiny-Similarity model
         env:
           HF_TOKEN: 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
         run: |
-          echo "Bajando modelo ONNX..."
-
           curl -L -H "Authorization: Bearer $HF_TOKEN" \
             https://huggingface.co/valhalla/tiny-similarity/resolve/main/model.onnx \
-            -o layer/python/tiny_similarity/model.onnx
+            -o model_layer/python/tiny_similarity/model.onnx
 
           curl -L -H "Authorization: Bearer $HF_TOKEN" \
             https://huggingface.co/valhalla/tiny-similarity/resolve/main/config.json \
-            -o layer/python/tiny_similarity/config.json
+            -o model_layer/python/tiny_similarity/config.json
 
           curl -L -H "Authorization: Bearer $HF_TOKEN" \
             https://huggingface.co/valhalla/tiny-similarity/resolve/main/tokenizer.json \
-            -o layer/python/tiny_similarity/tokenizer.json
+            -o model_layer/python/tiny_similarity/tokenizer.json
 
           curl -L -H "Authorization: Bearer $HF_TOKEN" \
             https://huggingface.co/valhalla/tiny-similarity/resolve/main/vocab.txt \
-            -o layer/python/tiny_similarity/vocab.txt
+            -o model_layer/python/tiny_similarity/vocab.txt
 
-      # ----------------------------------------------
-      # Instalar dependencias Linux-compatibles para Lambda
-      # ----------------------------------------------
-      - name: Install NumPy + ONNXRuntime into layer
+      - name: Zip model layer
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install numpy --target layer/python/
-          python3 -m pip install onnxruntime --target layer/python/
-          python3 -m pip install transformers --target layer/python/
+          cd model_layer
+          zip -r ../tiny_similarity_model.zip .
 
-      # ----------------------------------------------
-      # Zip final del Layer
-      # ----------------------------------------------
-      - name: Zip layer
-        run: |
-          cd layer
-          zip -r ../tiny_similarity_layer.zip .
-
-      - name: Upload zip as workflow artifact (debug)
+      - name: Upload model artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tiny_similarity_layer.zip
-          path: tiny_similarity_layer.zip
+          name: tiny_similarity_model.zip
+          path: tiny_similarity_model.zip
 
-      # ----------------------------------------------
-      # Publicar a AWS Lambda Layer
-      # ----------------------------------------------
+      #########################################
+      # Publish both Layers
+      #########################################
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -79,9 +85,16 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Publish Lambda Layer
+      - name: Publish Deps Layer
         run: |
           aws lambda publish-layer-version \
-            --layer-name TinySimilarityONNX \
+            --layer-name TinySimilarityDeps \
             --compatible-runtimes python3.10 \
-            --zip-file fileb://tiny_similarity_layer.zip
+            --zip-file fileb://tiny_similarity_deps.zip
+
+      - name: Publish Model Layer
+        run: |
+          aws lambda publish-layer-version \
+            --layer-name TinySimilarityModel \
+            --compatible-runtimes python3.10 \
+            --zip-file fileb://tiny_similarity_model.zip
