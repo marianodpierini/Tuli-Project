@@ -13,16 +13,22 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
+      # ----------------------
+      # Crear estructura base
+      # ----------------------
       - name: Create folder structure
         run: |
           mkdir -p layer/python/tiny_similarity
 
+      # ----------------------------------------------
+      # Descargar modelo Tiny-Similarity (ONNX + tokenizer)
+      # ----------------------------------------------
       - name: Download Tiny-Similarity ONNX model
         env:
           HF_TOKEN: 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
         run: |
-          echo "Descargando modelo..."
-          
+          echo "Bajando modelo ONNX..."
+
           curl -L -H "Authorization: Bearer $HF_TOKEN" \
             https://huggingface.co/valhalla/tiny-similarity/resolve/main/model.onnx \
             -o layer/python/tiny_similarity/model.onnx
@@ -39,6 +45,19 @@ jobs:
             https://huggingface.co/valhalla/tiny-similarity/resolve/main/vocab.txt \
             -o layer/python/tiny_similarity/vocab.txt
 
+      # ----------------------------------------------
+      # Instalar dependencias Linux-compatibles para Lambda
+      # ----------------------------------------------
+      - name: Install NumPy + ONNXRuntime into layer
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install numpy --target layer/python/
+          python3 -m pip install onnxruntime --target layer/python/
+          python3 -m pip install transformers --target layer/python/
+
+      # ----------------------------------------------
+      # Zip final del Layer
+      # ----------------------------------------------
       - name: Zip layer
         run: |
           cd layer
@@ -50,6 +69,9 @@ jobs:
           name: tiny_similarity_layer.zip
           path: tiny_similarity_layer.zip
 
+      # ----------------------------------------------
+      # Publicar a AWS Lambda Layer
+      # ----------------------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
