@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Float, BigInteger, Boolean, Text, DateTime, String, Integer, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 
 Base = declarative_base()
 
@@ -78,7 +78,7 @@ class SuggestedQuestions(Base):
     parametros = Column(JSONB)
     activa = Column(Boolean, default=True)
     prioridad = Column(Integer)
-    keywords = Column(Text)
+    keywords = Column(ARRAY(Text))
     frecuencia = Column(Text)
     template_respuesta = Column(Text)
     created_at = Column(DateTime, server_default=func.now())

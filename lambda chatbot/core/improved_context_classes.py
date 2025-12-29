@@ -20,6 +20,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from core.database.db import SessionLocal
 
 PROHIBITED_KEYWORDS = ["insert", "update", "delete", "drop", "alter", "truncate", "create"]
+LIMITE_TOKENS_DIARIO = 550000
+dynamodb = boto3.resource('dynamodb')
+usage_table = dynamodb.Table("user_usage_tokens")
+metrics_table = dynamodb.Table("questions_metrics")
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -99,10 +103,6 @@ class EnhancedQueryManager:
                 self.logger.warning("Se detectaron palabras prohibidas en la consulta")
                 return "SELECT NULL AS resultado"
 
-            if len(processed_query) > self.max_query_length:
-                self.logger.warning(f"La consulta excede la longitud máxima de {self.max_query_length}")
-                processed_query = processed_query[:self.max_query_length]
-
             return processed_query
 
         except Exception as e:
@@ -144,68 +144,10 @@ class EnhancedQueryManager:
         
         return query
 
-
-class UserSessionStore:
-    """Almacén persistente de sesiones de usuario usando DynamoDB"""
-    
-    def __init__(self, logger: Logger, table_name='lambda_user_sessions'):
-        self.dynamodb = boto3.resource('dynamodb')
-        self.table_name = table_name
-        self.table = None
-        self.logger = logger
-        self._initialize_table()
-    
-    def _initialize_table(self):
-        """Inicializa la tabla de DynamoDB (la crea si no existe)"""
-        try:
-            self.table = self.dynamodb.Table(self.table_name)
-            # Verificar que la tabla existe
-            self.table.load()
-            self.logger.info(f"Tabla DynamoDB '{self.table_name}' encontrada")
-        except Exception as e:
-            self.logger.warning(f"Tabla DynamoDB no disponible: {str(e)}")
-            # Si no hay DynamoDB, usar almacenamiento en memoria
-            self.table = None
-    
-    def save_session_data(self, user_hash: str, session_data: dict):
-        """Guarda datos de sesión en DynamoDB"""
-        if not self.table:
-            return False
-        
-        try:
-            item = {
-                'user_hash': user_hash,
-                'session_data': json.dumps(session_data, default=str),
-                'last_updated': datetime.now().isoformat(),
-                'ttl': int((datetime.now() + timedelta(days=30)).timestamp())  # TTL de 30 días
-            }
-            
-            self.table.put_item(Item=item)
-            return True
-        except Exception as e:
-            self.logger.error(f"Error guardando sesión en DynamoDB: {str(e)}")
-            return False
-    
-    def load_session_data(self, user_hash: str) -> Optional[dict]:
-        """Carga datos de sesión desde DynamoDB"""
-        if not self.table:
-            return None
-        
-        try:
-            response = self.table.get_item(Key={'user_hash': user_hash})
-            if 'Item' in response:
-                session_data = json.loads(response['Item']['session_data'])
-                return session_data
-            return None
-        except Exception as e:
-            self.logger.error(f"Error cargando sesión desde DynamoDB: {str(e)}")
-            return None
-
 class UserActivityTracker:
     """Tracker avanzado de actividad por usuario con métricas y agregación"""
     
-    def __init__(self, logger: Logger, session_store: UserSessionStore = None):
-        self.session_store = session_store
+    def __init__(self, logger: Logger):
         self.logger = logger
         self.user_activities = defaultdict(lambda: {
             'queries': deque(maxlen=100),  # Últimas 100 queries
@@ -390,19 +332,12 @@ class UserActivityTracker:
                     'unique_queries_count': len(stats['unique_queries'])
                 }
             
-            self.session_store.save_session_data(user_hash, persistent_data)
         except Exception as e:
             self.logger.error(f"Error persistiendo datos de usuario {user_hash}: {str(e)}")
     
     def get_user_summary(self, user_hash: str) -> dict:
         """Obtiene resumen completo de actividad del usuario"""
         user_data = self.user_activities.get(user_hash, {})
-        if not user_data:
-            # Intentar cargar desde persistencia
-            persistent_data = self.session_store.load_session_data(user_hash)
-            if persistent_data:
-                return persistent_data
-            return {"error": "Usuario no encontrado"}
         
         # Calcular estadísticas en tiempo real
         recent_queries = list(user_data['queries'])
@@ -458,7 +393,7 @@ class UserActivityTracker:
 class EnhancedUserContext:
     """UserContext extendido con capacidades de sesión avanzadas"""
     
-    def __init__(self, user_id=None, session_id=None, ip_address=None, user_agent=None, user_email: str=None, username: str=None, nickname: str=None, name: str=None, work_area: str=None, activity_tracker: UserActivityTracker = None):
+    def __init__(self, user_id=None, session_id=None, ip_address=None, user_agent=None, user_email: str=None, username: str=None, nickname: str=None, phone_number: str=None, name: str=None, work_area: str=None, activity_tracker: UserActivityTracker = None):
         self.user_id = user_id or "anonymous"
         self.session_id = session_id
         self.user_email = user_email
@@ -472,6 +407,7 @@ class EnhancedUserContext:
         self.activity_tracker = activity_tracker
         self.nickname = nickname
         self.name = name
+        self.phone_number = phone_number
         
     def get_user_hash(self):
         """Genera un hash del usuario para privacidad"""
@@ -496,6 +432,80 @@ class EnhancedUserContext:
     def get_session_summary(self) -> dict:
         """Obtiene resumen de la sesión actual"""
         return self.activity_tracker.get_user_summary(self.get_user_hash())
+    
+    def update_use_tokens(self, trace_data: dict, source: str):
+        user_id = self.user_email if source == "google_chat" else self.phone_number
+
+        usage = (
+            trace_data.get("modelInvocationOutput", {})
+            .get("metadata", {})
+            .get("usage", {})
+        )
+        total = usage.get("inputTokens", 0) + usage.get("outputTokens", 0)
+
+        response = usage_table.get_item(Key={"user_id": user_id})
+        item = response.get("Item")
+        if not item:
+            usage_table.put_item(Item={
+                "user_id": user_id,
+                "tokens_usados": total,
+                "fecha_ultimo_uso": str(date.today()),
+                "limite_tokens": LIMITE_TOKENS_DIARIO,
+                "channel": source
+            })
+        else:
+            nuevo_total = item["tokens_usados"] + total
+
+            usage_table.update_item(
+                Key={"user_id": user_id},
+                UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
+                ExpressionAttributeValues={
+                    ":nuevo": nuevo_total,
+                    ":fecha": date.today().isoformat()
+                }
+            )
+
+    def validate_use_tokens(self, source: str):
+
+        user_id = self.user_email if source == "google_chat" else self.phone_number
+
+        response = usage_table.get_item(Key={"user_id": user_id})
+        item = response.get("Item")
+
+        if not item:
+            return True
+        
+        hoy = date.today().isoformat()
+        if item["fecha_ultimo_uso"] != hoy:
+            item["tokens_usados"] = 0
+            item["fecha_ultimo_uso"] = hoy
+
+            usage_table.update_item(
+                Key={"user_id": user_id},
+                UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
+                ExpressionAttributeValues={
+                    ":nuevo": item["tokens_usados"],
+                    ":fecha": item["fecha_ultimo_uso"]
+                }
+            )
+
+        limite = item.get("limite_tokens", LIMITE_TOKENS_DIARIO)
+
+        if item["tokens_usados"] > limite:
+            return False
+        
+        return True
+    
+    def metrics_questions(self, total_ms: int, total_tokens: int, total_steps: int, input: str, total_ms_lambda: int):
+        metrics_table.put_item(Item={
+                "question": input,
+                "tokens": total_tokens,
+                "date_questions": str(date.today()),
+                "steps": total_steps,
+                "total_ms": total_ms,
+                "total_ms_lambda": total_ms_lambda,
+            })
+
     
 class StructuredUserLogger:
     """Logger estructurado optimizado para CloudWatch con filtros por usuario"""
@@ -586,11 +596,10 @@ class StructuredUserLogger:
 class EnhancedQueryExecutor:
     """QueryExecutor mejorado con logging completo por usuario"""
     
-    def __init__(self, logger: Logger, user_logger: StructuredUserLogger, validator, cache):
+    def __init__(self, logger: Logger, user_logger: StructuredUserLogger, validator):
         self.logger = logger
         self.user_logger = user_logger
         self.validator = validator
-        self.cache = cache
         self.cloudwatch = boto3.client('cloudwatch')
         self.query_corrections = {}
 
@@ -629,51 +638,15 @@ class EnhancedQueryExecutor:
 
             self.logg_querys(query, "Query SQL Original", query_id)
         
-            # Verificar caché
-            if query in self.cache:
-                cache_hit = True
-                results = self.cache[query]
-                execution_time = (pytime.time() - start_time) * 1000
-                
-                # Log con el sistema mejorado
-                self.user_logger.log_user_sql_execution(
-                    user_context, query, execution_time, 
-                    len(results) if isinstance(results, list) else 0, cache_hit=True
-                )
-                
-                self.logger.info(f"[{query_id}][{user_context.get_user_hash()}] Cache hit!")
-                
-                return {"results": results, "cache_hit": True}
-        
-            # Verificar consultas corregidas anteriormente
-            if hasattr(self, 'query_corrections') and query in self.query_corrections:
-                corrected_query = self.query_corrections[query]
-                self.logg_querys(corrected_query, "Query SQL Corregida", query_id)
+            # Procesar y validar la consulta
+            processed_query = self.validator.validate_stage1(query)
+            corrected_query = self.validator.validate_stage2(processed_query)
             
-                if corrected_query in self.cache:
-                    cache_hit = True
-                    results = self.cache[corrected_query]
-                    execution_time = (pytime.time() - start_time) * 1000
-                    
-                    self.user_logger.log_user_sql_execution(
-                        user_context, corrected_query, execution_time, 
-                        len(results) if isinstance(results, list) else 0, cache_hit=True
-                    )
-                    
-                    self.logger.info(f"[{query_id}][{user_context.get_user_hash()}] Cache hit de consulta corregida!")
-                    return {"results": results, "cache_hit": True}
-            
-                query = corrected_query
-            else:
-                # Procesar y validar la consulta
-                processed_query = self.validator.validate_stage1(query)
-                corrected_query = self.validator.validate_stage2(processed_query)
-            
-                # Guardar la corrección
-                if not hasattr(self, 'query_corrections'):
-                    self.query_corrections = {}
-                self.query_corrections[query] = corrected_query
-                query = corrected_query
+            # Guardar la corrección
+            if not hasattr(self, 'query_corrections'):
+                self.query_corrections = {}
+            self.query_corrections[query] = corrected_query
+            query = corrected_query
         
             self.logg_querys(query, "Query SQL Validada", query_id)
 
@@ -705,11 +678,6 @@ class EnhancedQueryExecutor:
                     for key, value in row.items():
                         if isinstance(value, str) and len(value) > 1000:
                             row[key] = value[:1000] + "..."
-
-                # Guardar en caché
-                self.cache[original_query] = results
-                if original_query != query:
-                    self.cache[query] = results
                 
                 total_execution_time = (pytime.time() - start_time) * 1000
                 
