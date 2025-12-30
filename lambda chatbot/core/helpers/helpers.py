@@ -4,7 +4,7 @@ import json
 import boto3
 from urllib.parse import parse_qs
 from core.database.models import SuggestedQuestions
-from sqlalchemy import any_, and_, text
+from sqlalchemy import any_, and_, text, or_
 
 from core.database.db import SessionLocal
 
@@ -98,7 +98,7 @@ def normalize_event(event):
 
 def valite_existing_response(session_id: str, keywords: List[str], user_input: str, boto_config):
 
-        conditions = [kw == any_(SuggestedQuestions.keywords) for kw in keywords]
+        conditions = [SuggestedQuestions.keywords.ilike(f"%{kw}%") for kw in keywords]
 
         client = boto3.client('bedrock-agent-runtime', region_name='us-east-1', config=boto_config)
 
@@ -178,28 +178,44 @@ def classify_with_bedrock(question: str) -> bool:
         """
         client = boto3.client("bedrock-runtime", region_name="us-east-1")
 
-        prompt = f"""
-        Dada esta frase del usuario: "{question}"
+        prompt = f"""Human:
+        Classify if this question needs previous conversation context.
 
-        Responde SOLO con una palabra: 'independiente' si puede entenderse sola,
-        o 'dependiente' si necesita contexto previo.
+        Question: "{question}"
+
+        Answer only YES or NO:
+        - YES = needs previous context (don't cache)
+        - NO = standalone question (cache it)
+
+        Assistant:
         """
 
         response = client.invoke_model(
-            modelId="anthropic.claude-3-5-haiku-20241022-v1:0",
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps({
-                "inputText": prompt,
-                "maxTokens": 10,
-                "temperature": 0.0
-            })
-        )
+        modelId="us.anthropic.claude-3-5-haiku-20241022-v1:0",
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 10,
+            "temperature": 0.0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }
+            ]
+        }))
+
 
         result = json.loads(response["body"].read())
-        output = result["outputText"].strip().lower()
+        output = result["content"][0]["text"]
 
-        return output.startswith("independiente")
+        return output == "NO"
 
 def get_agent_id(user_email:str):
     dict_data = json.loads(os.environ["AGENT_TO_USERS"])

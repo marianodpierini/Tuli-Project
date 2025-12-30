@@ -354,11 +354,12 @@ class ApiRequestHandler(RequestHandler):
                     save_question = True
 
             if save_question:
+                keywords_str = " ".join(keywords_cache)
                 with SessionLocal() as session:
                     new_q = SuggestedQuestions(
                         nombre=last_message,
                         activa=True, 
-                        keywords=keywords_cache,
+                        keywords=keywords_str,
                     )
                     session.add(new_q)
                     session.commit()
@@ -388,7 +389,7 @@ class ApiRequestHandler(RequestHandler):
             'enableTrace': True,
             'sessionState': {
                 "sessionAttributes": {
-                    "suggestion_id": str(new_q_id) if new_q_id else None
+                    "suggestion_id": str(new_q_id) if new_q_id else ""
                 }
             }
         }

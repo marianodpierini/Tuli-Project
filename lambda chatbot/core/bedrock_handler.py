@@ -147,7 +147,7 @@ class BedrockRequestHandler(RequestHandler):
 
         new_id = self.event.session_attributes.get("suggestion_id")
 
-        if new_id:
+        if new_id != "":
             with SessionLocal() as session:
                 stmt = (
                     update(SuggestedQuestions)
