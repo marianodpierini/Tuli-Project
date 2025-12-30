@@ -341,7 +341,7 @@ class ApiRequestHandler(RequestHandler):
                         assistant_response += chunk_data
 
             self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
-            return assistant_response.strip()
+            return assistant_response.strip(), 0, 0, 0, input_to_metrics
         else:
             save_question = False
 
@@ -359,7 +359,7 @@ class ApiRequestHandler(RequestHandler):
                     new_q = SuggestedQuestions(
                         nombre=last_message,
                         activa=True, 
-                        keywords=keywords_str,
+                        keywords=keywords_cache,
                     )
                     session.add(new_q)
                     session.commit()

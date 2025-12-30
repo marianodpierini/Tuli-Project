@@ -5,6 +5,7 @@ import boto3
 from urllib.parse import parse_qs
 from core.database.models import SuggestedQuestions
 from sqlalchemy import any_, and_, text, or_
+from decimal import Decimal
 
 from core.database.db import SessionLocal
 
@@ -13,6 +14,15 @@ CONTEXT_DEPENDENT_PHRASES = {
         "cual de esos", "ese", "esa", "eso", "esas", "esos",
         "ahora", "después", "también", "además"
     }
+
+def normalize_decimals(obj):
+    if isinstance(obj, list):
+        return [normalize_decimals(i) for i in obj]
+    if isinstance(obj, dict):
+        return {k: normalize_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, Decimal):
+        return str(obj)
+    return obj
 
 
 def normalize_event(event):
@@ -115,13 +125,14 @@ def valite_existing_response(session_id: str, keywords: List[str], user_input: s
                 query_results = session.execute(text(sql_query))
 
                 query_result_dicts = [dict(row._mapping) for row in query_results]
+                safe_results = normalize_decimals(query_result_dicts)
 
 
                 input_text = f"""
                     El usuario preguntó: "{user_input}"
 
                     La consulta SQL asociada (ID {existing_question.id}) devolvió estos resultados:
-                    {json.dumps(query_result_dicts, ensure_ascii=False, indent=2)}
+                    {json.dumps(safe_results, ensure_ascii=False, indent=2)}
 
                     Por favor responde al usuario en lenguaje natural, breve y clara,
                     usando los resultados de la consulta.
@@ -213,9 +224,11 @@ def classify_with_bedrock(question: str) -> bool:
 
 
         result = json.loads(response["body"].read())
-        output = result["content"][0]["text"]
+        raw_text = result["content"][0]["text"]
 
-        return output == "NO"
+        answer = raw_text.strip().upper().split()[0]
+
+        return answer == "NO"
 
 def get_agent_id(user_email:str):
     dict_data = json.loads(os.environ["AGENT_TO_USERS"])
