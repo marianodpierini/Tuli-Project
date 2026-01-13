@@ -341,7 +341,7 @@ class ApiRequestHandler(RequestHandler):
                         assistant_response += chunk_data
 
             self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
-            return assistant_response.strip(), 0, 0, 0, input_to_metrics
+            return assistant_response.strip()
         else:
             save_question = False
 
