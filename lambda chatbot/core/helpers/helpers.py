@@ -5,27 +5,13 @@ import boto3
 from urllib.parse import parse_qs
 from core.database.models import SuggestedQuestions
 from sqlalchemy import any_, and_, text, or_
-<<<<<<< Updated upstream
 from decimal import Decimal
-=======
->>>>>>> Stashed changes
 
 from core.database.db import SessionLocal
 
 import re
 from typing import Optional
 
-<<<<<<< Updated upstream
-def normalize_decimals(obj):
-    if isinstance(obj, list):
-        return [normalize_decimals(i) for i in obj]
-    if isinstance(obj, dict):
-        return {k: normalize_decimals(v) for k, v in obj.items()}
-    if isinstance(obj, Decimal):
-        return str(obj)
-    return obj
-
-=======
 # Expresiones que indican dependencia fuerte de contexto
 CONTEXT_DEPENDENT_PATTERNS = [
     r"\b(eso|esa|esas|esos|aquello|aquellas|aquellos)\b",
@@ -44,7 +30,15 @@ COMMON_VERB_PATTERNS = [
 
 # Palabras clave del dominio (ajustá a tu negocio)
 DOMAIN_KEYWORDS_PATTERN = r"\b(ventas|pasajeros|rentabilidad|ingresos|reservas|margen)\b"
->>>>>>> Stashed changes
+
+def normalize_decimals(obj):
+    if isinstance(obj, list):
+        return [normalize_decimals(i) for i in obj]
+    if isinstance(obj, dict):
+        return {k: normalize_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, Decimal):
+        return str(obj)
+    return obj
 
 def normalize_event(event):
     enriched_event = event
@@ -226,35 +220,6 @@ def classify_with_bedrock(question: str) -> bool:
         """
 
         response = client.invoke_model(
-<<<<<<< Updated upstream
-        modelId="us.anthropic.claude-3-5-haiku-20241022-v1:0",
-        contentType="application/json",
-        accept="application/json",
-        body=json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 10,
-            "temperature": 0.0,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }
-            ]
-        }))
-
-
-        result = json.loads(response["body"].read())
-        raw_text = result["content"][0]["text"]
-
-        answer = raw_text.strip().upper().split()[0]
-
-        return answer == "NO"
-=======
             modelId="us.anthropic.claude-haiku-4-5-20251001-v1:0",
             contentType="application/json",
             accept="application/json",
@@ -279,7 +244,6 @@ def classify_with_bedrock(question: str) -> bool:
         output = result["content"][0]["text"].strip().lower()
 
         return output == "NO", input_tokens + output_tokens
->>>>>>> Stashed changes
 
 def get_agent_id(user_email:str):
     dict_data = json.loads(os.environ["AGENT_TO_USERS"])
