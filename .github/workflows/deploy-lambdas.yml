@@ -113,31 +113,31 @@ jobs:
             --function-name OrquestLambda \
             --zip-file fileb://lambda\ orquest/orquest_lambda.zip
 
-    deploy-chatbot-test:
-      name: Deploy Chatbot Lambda Test
-      runs-on: ubuntu-latest
+  deploy-chatbot-test:
+    name: Deploy Chatbot Lambda Test
+    runs-on: ubuntu-latest
 
-      steps:
-        - name: Checkout código
-          uses: actions/checkout@v3
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
 
-        - name: Instalar dependencias Chatbot
-          run: |
-            cd "lambda chatbot test"
-            mkdir -p package
-            if [ -f requirements.txt ]; then pip install -r requirements.txt -t package/; fi
-            cp -r *.py core package/
-            cd package && zip -r ../chatbot_lambda_test.zip .
+      - name: Instalar dependencias Chatbot
+        run: |
+          cd "lambda chatbot test"
+          mkdir -p package
+          if [ -f requirements.txt ]; then pip install -r requirements.txt -t package/; fi
+          cp -r *.py core package/
+          cd package && zip -r ../chatbot_lambda_test.zip .
 
-        - name: Configurar credenciales AWS
-          uses: aws-actions/configure-aws-credentials@v2
-          with:
-            aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-            aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-            aws-region: us-east-1
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
-        - name: Subir Chatbot Lambda Test
-          run: |
-            aws lambda update-function-code \
-              --function-name AgenteDataBedrockTest \
-              --zip-file fileb://lambda\ chatbot/chatbot_lambda_test.zip
+      - name: Subir Chatbot Lambda Test
+        run: |
+          aws lambda update-function-code \
+            --function-name AgenteDataBedrockTest \
+            --zip-file fileb://lambda\ chatbot/chatbot_lambda_test.zip
