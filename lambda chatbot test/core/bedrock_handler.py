@@ -18,13 +18,20 @@ from core.request_handler import RequestHandler
 
 ALLOWED_PROCEDURES = ["objetivos_departamentales"]
 
-
 class BedrockRequestHandler(RequestHandler):
     def __init__(self, logger, req_id, event, lambda_handler):
         super().__init__(logger, req_id, event, lambda_handler)
         self.event_id = str(uuid.uuid4())[:8]
         self.start_time = pytime.time()
         self.bedrock_session_id = self.event.session_id
+        self.routes = {
+            "/consulta": self.handle_consulta,
+            "/schema": self.handle_schema,
+            "/system_metrics": self.handle_system_metrics,
+            "/diagnostico": self.handle_diagnostico,
+            "/diagnostics": self.handle_diagnostics,
+            "/stored_procedure": self.handle_stored_procedure,
+        }
 
     def format_response_for_bedrock(self, action_group, api_path, http_method, data, status_code=200, session_attributes=None, prompt_session_attributes=None):
         if session_attributes is None:
@@ -594,19 +601,9 @@ class BedrockRequestHandler(RequestHandler):
         )
 
         try:
-            if self.event.api_path == '/consulta':
-                response = self.handle_consulta()
-            elif self.event.api_path == '/schema':
-                response = self.handle_schema()
-            elif self.event.api_path == '/system_metrics':
-                response = self.handle_system_metrics()
-            elif self.event.api_path == '/diagnostico':
-                response = self.handle_diagnostico()
-            elif self.event.api_path == '/diagnostics':
-                response = self.handle_diagnostics()
-            elif self.event.api_path == '/stored_procedure':
-                response = self.handle_stored_procedure()
-            else:
+            path = self.event.api_path
+            handler = self.routes.get(path)
+            if handler is None:
                 self.logger.warning(f"[{self.event_id}] Endpoint no reconocido: {self.event.api_path}")
             
                 self.user_logger.log_user_error(
@@ -625,6 +622,8 @@ class BedrockRequestHandler(RequestHandler):
                     session_attributes=self.event.session_attributes,
                     prompt_session_attributes=self.event.prompt_session_attributes
                 )
+
+            response = handler()
         
         except Exception as e:
             total_time = pytime.time() - self.start_time

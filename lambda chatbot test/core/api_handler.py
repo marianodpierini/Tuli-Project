@@ -340,7 +340,7 @@ class ApiRequestHandler(RequestHandler):
                         chunk_data = event['chunk']['bytes'].decode('utf-8')
                         assistant_response += chunk_data
 
-            self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
+            self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}. Se usó respuesta existente.")
             return assistant_response.strip()
         else:
             save_question = False
