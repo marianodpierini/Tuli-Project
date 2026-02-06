@@ -4,7 +4,7 @@ import json
 import boto3
 from urllib.parse import parse_qs
 from core.database.models import SuggestedQuestions
-from sqlalchemy import any_, and_, text, or_
+from sqlalchemy import and_, text, func
 from decimal import Decimal
 
 from core.database.db import SessionLocal
@@ -123,14 +123,15 @@ def normalize_event(event):
 
 def valite_existing_response(session_id: str, keywords: List[str], user_input: str, boto_config):
 
-        conditions = [SuggestedQuestions.keywords.ilike(f"%{kw}%") for kw in keywords]
-
         client = boto3.client('bedrock-agent-runtime', region_name='us-east-1', config=boto_config)
 
         with SessionLocal() as session:
             existing_question = (
                 session.query(SuggestedQuestions)
-                .filter(SuggestedQuestions.activa.is_(True), and_(*conditions))
+                .filter(
+                    SuggestedQuestions.activa.is_(True),
+                    SuggestedQuestions.keywords.op("&&")(keywords),
+                )
                 .order_by(SuggestedQuestions.prioridad)
                 .first()
             )

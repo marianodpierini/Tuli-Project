@@ -9,7 +9,7 @@ from functools import lru_cache
 from sqlalchemy.inspection import inspect
 from sqlalchemy import inspect, extract, select, func, update, text
 
-from core.improved_context_classes import EnhancedUserContext, UserActivityTracker, CustomJSONEncoder
+from core.improved_context_classes import EnhancedUserContext, CustomJSONEncoder
 from core.database.db import SessionLocal, engine
 from core.database.models import ServiciosTcktsRvas, SuggestedQuestions
 
@@ -82,13 +82,7 @@ class BedrockRequestHandler(RequestHandler):
         
         user_agent = self.event.agent
         
-        user_context = EnhancedUserContext(session_id=session_id, user_agent=user_agent, activity_tracker=UserActivityTracker(self.logger))
-        
-        # Registrar inicio de sesión
-        self.user_logger.log_user_session_event(user_context, "SESSION_START", {
-            "session_duration_intent": "unknown",
-            "initial_request_time": user_context.session_start_time.isoformat()
-        })
+        user_context = EnhancedUserContext(session_id=session_id, user_agent=user_agent)
         
         return user_context
     
@@ -131,12 +125,6 @@ class BedrockRequestHandler(RequestHandler):
             
         if not query:
             self.logger.error(f"[{self.event_id}] No se encontró consulta SQL")
-            self.user_logger.log_user_error(
-                self.user_context,
-                "NO_QUERY_FOUND",
-                "No se encontró consulta SQL en la solicitud",
-                {"event_id": self.event_id}
-            )
             return self.format_response_for_bedrock(
                 action_group=self.event.action_group,
                 api_path=self.event.api_path,
@@ -202,18 +190,6 @@ class BedrockRequestHandler(RequestHandler):
             'user_hash': self.user_context.get_user_hash()
         })
             
-        # Log final de respuesta exitosa
-        self.user_logger.log_user_request(
-            self.user_context,
-            "BEDROCK_RESPONSE_SUCCESS",
-            {
-                "event_id": self.event_id,
-                "response_time_ms": total_time * 1000,
-                "results_count": response_data["count"],
-                "cache_hit": response_data["cache_hit"]
-            }
-        )
-            
         return self.format_response_for_bedrock(
             action_group=self.event.action_group,
             api_path=self.event.api_path,
@@ -263,12 +239,6 @@ class BedrockRequestHandler(RequestHandler):
     def handle_schema(self):
         self.logger.info(f"[{self.event_id}] Procesando solicitud de esquema")
             
-        self.user_logger.log_user_request(
-            self.user_context,
-            "SCHEMA_REQUEST",
-            {"event_id": self.event_id}
-        )
-            
         try:
             schema = self.get_schema()
 
@@ -276,15 +246,7 @@ class BedrockRequestHandler(RequestHandler):
                 
             response_data = {"schema": schema}
             total_time = pytime.time() - self.start_time
-                
-            self.user_logger.log_user_request(
-                self.user_context,
-                "SCHEMA_RESPONSE_SUCCESS",
-                {
-                    "event_id": self.event_id,
-                    "response_time_ms": total_time * 1000
-                }
-            )
+
                 
             return self.format_response_for_bedrock(
                 action_group=self.event.action_group,
@@ -295,15 +257,6 @@ class BedrockRequestHandler(RequestHandler):
                 prompt_session_attributes=self.event.prompt_session_attributes
             )
         except Exception as schema_error:
-            self.user_logger.log_user_error(
-                self.user_context,
-                "SCHEMA_ERROR",
-                str(schema_error),
-                {
-                    "event_id": self.event_id,
-                    "stack_trace": traceback.format_exc()
-                }
-            )
                 
             self.logger.error(f"[{self.event_id}] Error obteniendo esquema: {str(schema_error)}")
             return self.format_response_for_bedrock(
@@ -319,12 +272,6 @@ class BedrockRequestHandler(RequestHandler):
     def handle_system_metrics(self):
         """Endpoint para métricas del sistema"""
         self.logger.info(f"[{self.event_id}] Procesando solicitud de métricas del sistema")
-                
-        self.user_logger.log_user_request(
-            self.user_context,
-            "SYSTEM_METRICS_REQUEST",
-            {"event_id": self.event_id}
-        )
                 
         try:
             #metrics = get_system_metrics()
@@ -392,27 +339,12 @@ class BedrockRequestHandler(RequestHandler):
     def handle_diagnostico(self):
         self.logger.info(f"[{self.event_id}] Petición a endpoint /diagnostico")
             
-        self.user_logger.log_user_request(
-            self.user_context,
-            "DIAGNOSTICS_REQUEST",
-            {"event_id": self.event_id}
-        )
-            
         diag_start_time = pytime.time()
         diagnostics = self.quick_database_diagnostics(full_check=True)
         diag_time = pytime.time() - diag_start_time
         self.logger.info(f"[{self.event_id}] Diagnóstico completado en {diag_time:.2f}s")
             
         response_data = {"diagnostico": diagnostics}
-            
-        self.user_logger.log_user_request(
-            self.user_context,
-            "DIAGNOSTICS_RESPONSE_SUCCESS",
-            {
-                "event_id": self.event_id,
-                "response_time_ms": diag_time * 1000
-            }
-        )
             
         return self.format_response_for_bedrock(
             action_group=self.event.action_group,
@@ -491,22 +423,10 @@ class BedrockRequestHandler(RequestHandler):
         try:
             self.logger.info(f"[{self.event_id}] Petición a endpoint /diagnostics")
                 
-            self.user_logger.log_user_request(
-                self.user_context,
-                "DIAGNOSTICS_DETAILED_REQUEST",
-                {"event_id": self.event_id}
-            )
-                
             # Verificar conexión directa
             conn_test = self.direct_diagnostic()
                 
             response_data = {"connection_test": conn_test}
-                
-            self.user_logger.log_user_request(
-                self.user_context,
-                "DIAGNOSTICS_DETAILED_RESPONSE_SUCCESS",
-                {"event_id": self.event_id}
-            )
                 
             return self.format_response_for_bedrock(
                 action_group=self.event.action_group,
@@ -517,15 +437,6 @@ class BedrockRequestHandler(RequestHandler):
                 prompt_session_attributes=self.event.prompt_session_attributes
             )
         except Exception as diag_error:
-            self.user_logger.log_user_error(
-                self.user_context,
-                "DIAGNOSTICS_DETAILED_ERROR",
-                str(diag_error),
-                {
-                    "event_id": self.event_id,
-                    "stack_trace": traceback.format_exc()
-                }
-            )
             self.logger.error(f"[{self.event_id}] Error en diagnósticos: {str(diag_error)}")
             return self.format_response_for_bedrock(
                 action_group=self.event.action_group,
@@ -588,17 +499,6 @@ class BedrockRequestHandler(RequestHandler):
             'prompt_session_attributes': self.event.prompt_session_attributes,
         })
 
-        # Log de la petición
-        self.user_logger.log_user_request(
-            self.user_context,
-            "BEDROCK_ACTION_GROUP",
-            {
-                "event_id": self.event_id,
-                "api_path": self.event.api_path,
-                "action_group": self.event.action_group,
-                "bedrock_session_id": self.bedrock_session_id
-            }
-        )
 
         try:
             path = self.event.api_path
@@ -606,12 +506,6 @@ class BedrockRequestHandler(RequestHandler):
             if handler is None:
                 self.logger.warning(f"[{self.event_id}] Endpoint no reconocido: {self.event.api_path}")
             
-                self.user_logger.log_user_error(
-                    self.user_context,
-                    "UNKNOWN_ENDPOINT",
-                    f"Endpoint no reconocido: {self.event.api_path}",
-                    {"event_id": self.event_id}
-                )
                 
                 response = self.format_response_for_bedrock(
                     action_group=self.event.action_group,
@@ -629,18 +523,6 @@ class BedrockRequestHandler(RequestHandler):
             total_time = pytime.time() - self.start_time
             stack_trace = traceback.format_exc()
             
-            self.user_logger.log_user_error(
-                self.user_context,
-                "BEDROCK_ACTION_GROUP_ERROR",
-                str(e),
-                {
-                    "event_id": self.event_id,
-                    "bedrock_session_id": self.bedrock_session_id,
-                    "execution_time_ms": total_time * 1000,
-                    "stack_trace": stack_trace
-                }
-            )
-            
             self.logger.error(f"[{self.event_id}] Error con session {self.bedrock_session_id}: {str(e)}")
 
             response = self.format_response_for_bedrock(
@@ -654,19 +536,6 @@ class BedrockRequestHandler(RequestHandler):
             )
         
         execution_time = (pytime.time() - self.start_time) * 1000
-
-        # Log final de respuesta exitosa del Lambda
-        self.user_logger.log_user_request(
-            self.user_context,
-            "LAMBDA_RESPONSE_SUCCESS",
-            {
-                "request_id": self.req_id,
-                "execution_time_ms": execution_time,
-                "response_type": type(response).__name__,
-                "active_users_count": len(self.activity_tracker.user_activities),
-                #"user_total_queries": activity_tracker.get_user_summary(user_context.get_user_hash()).get('total_queries', 0)
-            }
-        )
         
         self.logger.info(f"[{self.req_id}][{self.user_context.get_user_hash()}] Completado: {execution_time:.2f}ms")
         return response

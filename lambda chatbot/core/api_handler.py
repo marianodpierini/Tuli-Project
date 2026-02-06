@@ -18,7 +18,7 @@ from twilio.rest import Client
 from google.oauth2 import service_account
 import google.auth.transport.requests
 
-from core.improved_context_classes import EnhancedUserContext, UserActivityTracker, CustomJSONEncoder
+from core.improved_context_classes import EnhancedUserContext, CustomJSONEncoder
 from core.request_handler import APIGatewayModel, RequestHandler
 
 from core.database.db import SessionLocal
@@ -212,13 +212,7 @@ class ApiRequestHandler(RequestHandler):
 
         session_id_validated = self.validate_user_session(session_id, canal, 30)
         
-        user_context = EnhancedUserContext(user_id, session_id_validated, ip_address, user_agent, user_email, username, nickname, from_num, name, work_area, UserActivityTracker(self.logger))
-        
-        # Registrar inicio de sesión
-        self.user_logger.log_user_session_event(user_context, "SESSION_START", {
-            "session_duration_intent": "unknown",
-            "initial_request_time": user_context.session_start_time.isoformat()
-        })
+        user_context = EnhancedUserContext(user_id, session_id_validated, ip_address, user_agent, user_email, username, nickname, from_num, name, work_area)
         
         return user_context
   
@@ -324,7 +318,7 @@ class ApiRequestHandler(RequestHandler):
 
         keywords_user = [kw for kw in last_message.split() if kw.lower() in KEYWORDS_USER_CONTEXT]
 
-        keywords_cache = [kw for kw in last_message.split() if kw.lower() not in STOP_WORDS]
+        keywords_cache = [kw.lower() for kw in last_message.split() if kw.lower() not in STOP_WORDS]
 
         validation = valite_existing_response(session_id, keywords_cache, last_message, config)
         
@@ -356,12 +350,11 @@ class ApiRequestHandler(RequestHandler):
                     save_question = True
 
             if save_question:
-                keywords_str = " ".join(keywords_cache)
                 with SessionLocal() as session:
                     new_q = SuggestedQuestions(
                         nombre=last_message,
                         activa=True, 
-                        keywords=keywords_str,
+                        keywords=keywords_cache,
                     )
                     session.add(new_q)
                     session.commit()
@@ -533,18 +526,6 @@ class ApiRequestHandler(RequestHandler):
                 self.logger.info("[SOURCE] Evento recibido desde FrontEnd")
                 conversation_history = self.event.body.get('conversationHistory', [])
                 last_message = conversation_history[-1]['content']
-
-            self.user_logger.log_user_request(
-                self.user_context,
-                "INFO_USER_REQUEST",
-                {
-                    "api_path": self.event.resource,
-                    "http_method": self.event.http_method,
-                    "event_type": "API_GATEWAY",
-                    "lambda_version": "complete_user_logging_system",
-                    "user question": last_message,
-                }
-            )
 
             if not conversation_history:
                 return {
