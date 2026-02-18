@@ -2,6 +2,7 @@ from sqlalchemy import Column, Float, BigInteger, Boolean, Text, DateTime, Strin
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
+from pgvector.sqlalchemy import Vector
 
 Base = declarative_base()
 
@@ -79,6 +80,7 @@ class SuggestedQuestions(Base):
     activa = Column(Boolean, default=True)
     prioridad = Column(Integer)
     keywords = Column(ARRAY(Text))
+    embedding = Column(Vector(1024))
     frecuencia = Column(Text)
     template_respuesta = Column(Text)
     name_mappings = Column(JSONB)

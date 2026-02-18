@@ -23,7 +23,7 @@ from core.request_handler import APIGatewayModel, RequestHandler
 
 from core.database.db import SessionLocal
 from core.database.models import SuggestedQuestions
-from core.helpers.helpers import valite_existing_response, is_context_independent_heuristic, classify_with_bedrock, get_agent_id
+from core.helpers.helpers import valite_existing_response, is_context_independent_heuristic, classify_with_bedrock, get_agent_id, titan_embed
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "https://front-app-ia.s3.us-east-1.amazonaws.com",
@@ -284,6 +284,8 @@ class ApiRequestHandler(RequestHandler):
 
         client = boto3.client('bedrock-agent-runtime', region_name='us-east-1', config=config)
 
+        agent_id = get_agent_id(self.user_context.user_email)
+
         # 1. Extrae el último mensaje
         source = self.event.source
         if "whatsapp" or "google_chat" in source:
@@ -320,46 +322,53 @@ class ApiRequestHandler(RequestHandler):
 
         keywords_cache = [kw.lower() for kw in last_message.split() if kw.lower() not in STOP_WORDS]
 
-        validation = valite_existing_response(session_id, keywords_cache, last_message, config)
-        
         new_q_id = None
 
-        if validation:
-            assistant_response = ""
-            event_stream = validation.get('completion')
-            
-            if isinstance(event_stream, botocore.eventstream.EventStream):
-                for event in event_stream:
-                    if 'chunk' in event:
-                        chunk_data = event['chunk']['bytes'].decode('utf-8')
-                        assistant_response += chunk_data
+        if agent_id == "XKJTFFEMPC":
 
-            self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
-            return assistant_response.strip(), 0, 0, 0, input_to_metrics
-        else:
-            save_question = False
+            validation = valite_existing_response(session_id, keywords_cache, last_message, config)
 
-            decision = is_context_independent_heuristic(last_message)
+            if validation:
+                if validation == "Pregunta sin query":
+                    self.logger.info("La pregunta no tiene una query asociada.")
+                else:
+                    assistant_response = ""
+                    event_stream = validation.get('completion')
+                    
+                    if isinstance(event_stream, botocore.eventstream.EventStream):
+                        for event in event_stream:
+                            if 'chunk' in event:
+                                chunk_data = event['chunk']['bytes'].decode('utf-8')
+                                assistant_response += chunk_data
 
-            if decision is True:
-                save_question = True
-            elif decision is None:
-                response, total_tokens_llm = classify_with_bedrock(last_message)
-                self.user_context.update_use_tokens(source, total_tokens=total_tokens_llm)
-                if response:
+                    self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
+                    return assistant_response.strip(), 0, 0, 0, input_to_metrics
+            else:
+                save_question = False
+
+                decision = is_context_independent_heuristic(last_message)
+
+                if decision is True:
                     save_question = True
+                elif decision is None:
+                    response, total_tokens_llm = classify_with_bedrock(last_message)
+                    self.user_context.update_use_tokens(source, total_tokens=total_tokens_llm)
+                    if response:
+                        save_question = True
 
-            if save_question:
-                with SessionLocal() as session:
-                    new_q = SuggestedQuestions(
-                        nombre=last_message,
-                        activa=True, 
-                        keywords=keywords_cache,
-                    )
-                    session.add(new_q)
-                    session.commit()
+                if save_question:
+                    with SessionLocal() as session:
+                        embedding = titan_embed(last_message, keywords_cache, config)
+                        new_q = SuggestedQuestions(
+                            nombre=last_message,
+                            activa=True, 
+                            keywords=keywords_cache,
+                            embedding=embedding
+                        )
+                        session.add(new_q)
+                        session.commit()
 
-                    new_q_id = new_q.id
+                        new_q_id = new_q.id
 
         if len(keywords_user) >= 1:
             last_message += f"""
@@ -374,7 +383,6 @@ class ApiRequestHandler(RequestHandler):
                 Tene en cuenta para algunas preguntas sobre el dia o fecha actual que hoy es {date.today().isoformat()}
             """
 
-        agent_id = get_agent_id(self.user_context.user_email)
         
         params = {
             'agentId': 'DRSOAFDOTR',         # Reemplazá con tu agente real si hace falta
@@ -434,6 +442,7 @@ class ApiRequestHandler(RequestHandler):
                 "bot_response_text": assistant_response.strip(),
                 "user_question_text": input_to_metrics,
                 "user": self.event.body["email"],
+                "agend_id": agent_id,
                 "channel": source,
                 "created_at": date.today().isoformat(),
                 "expires_at": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())

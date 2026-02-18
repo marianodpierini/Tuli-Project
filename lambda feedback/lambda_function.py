@@ -85,6 +85,7 @@ def lambda_handler(event, context):
 
             if item:
                 feedback["bot_response_text"] = item.get("bot_response_text")
+                feedback["agent_id"] = item.get("agent_id")
 
         logger.info(f"Recibiendo feedback: {json.dumps(feedback)}")
         table.put_item(Item=feedback)

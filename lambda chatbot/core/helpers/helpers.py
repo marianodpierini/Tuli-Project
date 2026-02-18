@@ -4,8 +4,10 @@ import json
 import boto3
 from urllib.parse import parse_qs
 from core.database.models import SuggestedQuestions
-from sqlalchemy import and_, text, func
+from sqlalchemy import text, literal
 from decimal import Decimal
+
+from pgvector.sqlalchemy import Vector
 
 from core.database.db import SessionLocal
 
@@ -125,49 +127,67 @@ def valite_existing_response(session_id: str, keywords: List[str], user_input: s
 
         client = boto3.client('bedrock-agent-runtime', region_name='us-east-1', config=boto_config)
 
+        query_embedding = titan_embed(user_input, keywords, boto_config)
+
         with SessionLocal() as session:
-            existing_question = (
-                session.query(SuggestedQuestions)
-                .filter(
-                    SuggestedQuestions.activa.is_(True),
-                    SuggestedQuestions.keywords.op("&&")(keywords),
-                )
-                .order_by(SuggestedQuestions.prioridad)
-                .first()
+
+            query_vec = literal(
+                query_embedding,
+                type_=Vector(len(query_embedding))
             )
 
-            if existing_question and existing_question.sql_query is not None:
-                sql_query = existing_question.sql_query
-                query_results = session.execute(text(sql_query))
+            distance = SuggestedQuestions.embedding.cosine_distance(query_vec)
+            similarity = (1 - distance).label("similarity")
 
-                query_result_dicts = [dict(row._mapping) for row in query_results]
-                safe_results = normalize_decimals(query_result_dicts)
+            stmt = (
+                session.query(
+                    SuggestedQuestions,
+                    similarity
+                )
+                .filter(SuggestedQuestions.activa.is_(True), SuggestedQuestions.embedding.isnot(None))
+                .order_by(similarity.desc())
+                .limit(3)
+            )
+
+            results = stmt.all()
+
+        if len(results) > 0:
+            best, similarity = results[0]
+            if similarity is not None and similarity >= 0.80:
+                if best.sql_query is not None:
+                    sql_query = best.sql_query
+                    query_results = session.execute(text(sql_query))
+
+                    query_result_dicts = [dict(row._mapping) for row in query_results]
+                    safe_results = normalize_decimals(query_result_dicts)
 
 
-                input_text = f"""
-                    El usuario preguntó: "{user_input}"
+                    input_text = f"""
+                        El usuario preguntó: "{user_input}"
 
-                    La consulta SQL asociada (ID {existing_question.id}) devolvió estos resultados:
-                    {json.dumps(safe_results, ensure_ascii=False, indent=2)}
+                        La consulta SQL asociada (ID {best.id}) devolvió estos resultados:
+                        {json.dumps(safe_results, ensure_ascii=False, indent=2)}
 
-                    Por favor responde al usuario en lenguaje natural, breve y clara,
-                    usando los resultados de la consulta.
-                    """
+                        Por favor responde al usuario en lenguaje natural, breve y clara,
+                        usando los resultados de la consulta.
+                        """
 
-                params = {
-                    'agentId': 'DRSOAFDOTR',         # Reemplazá con tu agente real si hace falta
-                    'agentAliasId': 'XKJTFFEMPC',    # Reemplazá si tenés otro alias
-                    'sessionId': session_id,
-                    'inputText': input_text,
-                    'enableTrace': False,
-                }
+                    params = {
+                        'agentId': 'DRSOAFDOTR',         # Reemplazá con tu agente real si hace falta
+                        'agentAliasId': 'XKJTFFEMPC',    # Reemplazá si tenés otro alias
+                        'sessionId': session_id,
+                        'inputText': input_text,
+                        'enableTrace': False,
+                    }
 
-                response = client.invoke_agent(**params)
+                    response = client.invoke_agent(**params)
 
-                return response
+                    return response
+                else:
+                    return "Pregunta sin query"
 
-            else:
-                return None
+        else:
+            return None
             
 
 def is_context_independent_heuristic(question: str) -> Optional[bool]:
@@ -253,3 +273,28 @@ def get_agent_id(user_email:str):
             return key
 
     return "XKJTFFEMPC"
+
+
+def titan_embed(text: str, keywords: list, boto_config) -> list[float]:
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name="us-east-1",
+        config=boto_config
+    )
+
+    text_for_embedding = " ".join([
+        text or "",
+        " ".join(keywords or []),
+    ])
+    
+    response = client.invoke_model(
+        modelId="amazon.titan-embed-text-v2:0",
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps({
+            "inputText": text_for_embedding
+        }),
+    )
+
+    body = json.loads(response["body"].read())
+    return body["embedding"]

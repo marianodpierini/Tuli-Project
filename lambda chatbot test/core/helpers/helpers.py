@@ -120,7 +120,10 @@ def valite_existing_response(session_id: str, keywords: List[str], user_input: s
         with SessionLocal() as session:
             existing_question = (
                 session.query(SuggestedQuestions)
-                .filter(SuggestedQuestions.activa.is_(True), and_(*conditions))
+                .filter(
+                    SuggestedQuestions.activa.is_(True),
+                    SuggestedQuestions.keywords.op("&&")(keywords),
+                )
                 .order_by(SuggestedQuestions.prioridad)
                 .first()
             )
