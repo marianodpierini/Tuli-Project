@@ -519,8 +519,6 @@ class BedrockRequestHandler(RequestHandler):
             response = handler()
         
         except Exception as e:
-            total_time = pytime.time() - self.start_time
-            stack_trace = traceback.format_exc()
             
             self.logger.error(f"[{self.event_id}] Error con session {self.bedrock_session_id}: {str(e)}")
 

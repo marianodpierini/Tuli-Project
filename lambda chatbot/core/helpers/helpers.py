@@ -49,76 +49,36 @@ def normalize_event(event):
 
     if http_method == "POST":
         headers = event.get("headers", {})
-        raw_body = event.get("body", "")
-        is_base64 = event.get("isBase64Encoded", False)
+        body = event.get("body", {})
+        body_json = json.loads(body)
+        message_payload = body_json.get("chat", {}).get("messagePayload", {})
 
-        if is_base64 and isinstance(raw_body, str):
-                import base64
-                raw_body = base64.b64decode(raw_body).decode("utf-8")
+        raw = body_json.get("raw", {})
 
-        if headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
-            params = parse_qs(raw_body)
-
-            message = params.get("Body", [""])[0]
-            from_number = params.get("From", [""])[0]
-            to_number = params.get("To", [""])[0]
-
-            enriched_event = {
-                "resource": "/webhooks/whatsapp",
-                "path": "/webhooks/whatsapp",
-                "httpMethod": "POST",
-                "headers": headers,
-                "multiValueHeaders": {k: [v] if not isinstance(v, list) else v for k, v in headers.items()},
-                "queryStringParameters": event.get("queryStringParameters"),
-                "multiValueQueryStringParameters": event.get("multiValueQueryStringParameters"),
-                "pathParameters": event.get("pathParameters"),
-                "stageVariables": event.get("stageVariables"),
-                "requestContext": event.get("requestContext", {}),
-                "body": json.dumps({
-                    "from": from_number,
-                    "to": to_number,
-                    "message": message,
-                    "raw": params
-                }),
-                "isBase64Encoded": False,
-                "source": "whatsapp"
-            }
-        
-        elif path.endswith("/google"):
-            body_json = json.loads(raw_body)
-
-            message = body_json.get("text", "")
-            space_name = body_json.get("space", "")
-            thread_name = body_json.get("thread", "")
-
-            sender = (
-                body_json.get("rawEvent", {})
-                    .get("message", {})
-                    .get("sender", {})
-            )
-            sender_email = sender.get("email", "")
-            sender_name = sender.get("displayName", "")
+        message = message_payload.get("message", {}).get("text", "")
+        space_name = message_payload.get("space", {}).get("name", "")
+        thread_name = message_payload.get("thread", {}).get("name", "")
+        sender_email = message_payload.get("message", {}).get("sender", {}).get("email", "")
+        sender_name = message_payload.get("message", {}).get("sender", {}).get("displayName", "")
 
 
-            enriched_event = {
-                "resource": "/webhooks/google-test",
-                "path": "/webhooks/google-test",
-                "httpMethod": "POST",
-                "headers": headers,
-                "requestContext": event.get("requestContext", {}),
-                "body": json.dumps({
-                    "text": message,
-                    "name": sender_name,
-                    "email": sender_email,
-                    "space_name": space_name,
-                    "thread_name": thread_name,
-                    "raw": body_json,
-                }),
-                "isBase64Encoded": False,
-                "source": "google_chat"
-            }
-
-            print(enriched_event)
+        enriched_event = {
+            "resource": "/webhooks/google-test",
+            "path": "/webhooks/google-test",
+            "httpMethod": "POST",
+            "headers": headers,
+            "requestContext": event.get("requestContext", {}),
+            "body": json.dumps({
+                "text": message,
+                "name": sender_name,
+                "email": sender_email,
+                "space_name": space_name,
+                "thread_name": thread_name,
+                "raw": raw,
+            }),
+            "isBase64Encoded": False,
+            "source": "google_chat"
+        }
     
     return enriched_event
 
@@ -267,7 +227,10 @@ def classify_with_bedrock(question: str) -> bool:
         return output == "NO", input_tokens + output_tokens
 
 def get_agent_id(user_email:str):
+    flag_doc_agent = os.environ["FLAG_DOC_AGENT"].lower() == "true"
     dict_data = json.loads(os.environ["AGENT_TO_USERS"])
+    if flag_doc_agent:
+        return "RFPORJJMOR"
     for key, value in dict_data.items():
         if user_email in value:
             return key

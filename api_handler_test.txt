@@ -23,7 +23,7 @@ from core.request_handler import APIGatewayModel, RequestHandler
 
 from core.database.db import SessionLocal
 from core.database.models import SuggestedQuestions
-from core.helpers.helpers import valite_existing_response, is_context_independent_heuristic, classify_with_bedrock, get_agent_id, titan_embed
+from core.helpers.helpers import valite_existing_response, is_context_independent_heuristic, classify_with_bedrock, get_agent_id
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "https://front-app-ia.s3.us-east-1.amazonaws.com",
@@ -325,24 +325,20 @@ class ApiRequestHandler(RequestHandler):
         new_q_id = None
 
         if agent_id == "XKJTFFEMPC":
-
             validation = valite_existing_response(session_id, keywords_cache, last_message, config)
 
             if validation:
-                if validation == "Pregunta sin query":
-                    self.logger.info("La pregunta no tiene una query asociada.")
-                else:
-                    assistant_response = ""
-                    event_stream = validation.get('completion')
-                    
-                    if isinstance(event_stream, botocore.eventstream.EventStream):
-                        for event in event_stream:
-                            if 'chunk' in event:
-                                chunk_data = event['chunk']['bytes'].decode('utf-8')
-                                assistant_response += chunk_data
+                assistant_response = ""
+                event_stream = validation.get('completion')
+                
+                if isinstance(event_stream, botocore.eventstream.EventStream):
+                    for event in event_stream:
+                        if 'chunk' in event:
+                            chunk_data = event['chunk']['bytes'].decode('utf-8')
+                            assistant_response += chunk_data
 
-                    self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}")
-                    return assistant_response.strip(), 0, 0, 0, input_to_metrics
+                self.logger.info(f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}. Se usó respuesta existente.")
+                return assistant_response.strip()
             else:
                 save_question = False
 
@@ -358,12 +354,10 @@ class ApiRequestHandler(RequestHandler):
 
                 if save_question:
                     with SessionLocal() as session:
-                        embedding = titan_embed(last_message, keywords_cache, config)
                         new_q = SuggestedQuestions(
                             nombre=last_message,
                             activa=True, 
                             keywords=keywords_cache,
-                            embedding=embedding
                         )
                         session.add(new_q)
                         session.commit()
@@ -382,7 +376,6 @@ class ApiRequestHandler(RequestHandler):
                 Utiliza el apodo del usuario para responder, el cual es {self.user_context.nickname}.
                 Tene en cuenta para algunas preguntas sobre el dia o fecha actual que hoy es {date.today().isoformat()}
             """
-
         
         params = {
             'agentId': 'DRSOAFDOTR',         # Reemplazá con tu agente real si hace falta
@@ -543,7 +536,6 @@ class ApiRequestHandler(RequestHandler):
                     "body": json.dumps({"error": "No se proporcionó historial."})
                 }
         
-            
             output_text, total_ms, total_tokens, total_steps, input_to_metrics = self.process_conversation_with_bedrock(conversation_history, self.user_context.session_id)
 
             if "whatsapp" in source:
