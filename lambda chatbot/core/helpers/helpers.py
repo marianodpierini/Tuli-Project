@@ -14,6 +14,9 @@ from core.database.db import SessionLocal
 import re
 from typing import Optional
 
+s3 = boto3.client("s3")
+_cached_agents = None
+
 # Expresiones que indican dependencia fuerte de contexto
 CONTEXT_DEPENDENT_PATTERNS = [
     r"\b(eso|esa|esas|esos|aquello|aquellas|aquellos)\b",
@@ -226,13 +229,35 @@ def classify_with_bedrock(question: str) -> bool:
 
         return output == "NO", input_tokens + output_tokens
 
-def get_agent_id(user_email:str):
+def get_agents_mapping():
+    global _cached_agents
+
+    if _cached_agents is not None:
+        return _cached_agents
+
+    bucket = os.environ["S3_BUCKET"]
+    key = os.environ["S3_KEY"]
+
+    response = s3.get_object(Bucket=bucket, Key=key)
+    content = response["Body"].read().decode("utf-8")
+
+    _cached_agents = json.loads(content)
+    return _cached_agents
+
+def get_agent_id(user_email: str):
     flag_doc_agent = os.environ["FLAG_DOC_AGENT"].lower() == "true"
-    dict_data = json.loads(os.environ["AGENT_TO_USERS"])
+
+    dict_data = get_agents_mapping()
+
     if flag_doc_agent:
         return "RFPORJJMOR"
+
+    user_email = user_email.strip().lower()
+
     for key, value in dict_data.items():
-        if user_email in value:
+        users = [u.strip().lower() for u in value]
+
+        if user_email in users:
             return key
 
     return "XKJTFFEMPC"

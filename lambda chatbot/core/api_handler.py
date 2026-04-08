@@ -549,6 +549,7 @@ class ApiRequestHandler(RequestHandler):
             if "whatsapp" in source:
                 self.send_whatsapp(output_text)
             elif "google_chat" in source:
+                output_text = output_text.replace("**", "*")
                 self.send_google_chat_message(self.event.body["space_name"], output_text)
             else:                
                 return {
