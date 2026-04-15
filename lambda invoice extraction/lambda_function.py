@@ -10,6 +10,7 @@ from io import BytesIO
 from PyPDF2 import PdfReader
 
 from email_processor import EmailProcessor
+from database.db import SessionLocal
 
 s3 = boto3.client("s3")
 
@@ -59,7 +60,7 @@ def lambda_handler(event, context):
 
         operadores = cargar_operadores()
 
-        email_processor = EmailProcessor(msg, operadores, DEST_BUCKET, s3)
+        email_processor = EmailProcessor(msg, operadores, DEST_BUCKET, s3, SessionLocal)
 
         attachments_saved = email_processor.process_email()
 

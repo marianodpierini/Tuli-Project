@@ -246,14 +246,16 @@ class EnhancedUserContext:
         
         return True
     
-    def metrics_questions(self, total_ms: int, total_tokens: int, total_steps: int, input: str, total_ms_lambda: int):
+    def metrics_questions(self, total_ms: int, total_tokens: int, total_steps: int, input: str, total_ms_lambda: int, output: str):
         metrics_table.put_item(Item={
                 "question": input,
                 "tokens": total_tokens,
-                "date_questions": str(date.today()),
+                "date_questions": datetime.now().isoformat(),
                 "steps": total_steps,
                 "total_ms": total_ms,
                 "total_ms_lambda": total_ms_lambda,
+                "output": output,
+                "user_id": self.user_email
             })
 
 

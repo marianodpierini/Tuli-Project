@@ -2,13 +2,16 @@ from datetime import datetime
 from io import BytesIO
 from PyPDF2 import PdfReader
 
+from database.models import InvoicesExtractedEmails
+
 
 class EmailProcessor:
-    def __init__(self, msg, operadores, s3_bucket_destino, s3_client):
+    def __init__(self, msg, operadores, s3_bucket_destino, s3_client, db_session):
         self.msg = msg
         self.operadores = operadores
         self.s3_bucket_destino = s3_bucket_destino
         self.s3_client = s3_client
+        self.db_session = db_session
 
     
     def generate_s3_key(self, filename, now):
@@ -60,6 +63,7 @@ class EmailProcessor:
 
     def process_email(self):
         attachments_saved = []
+        data_to_insert = []
         for part in self.msg.iter_attachments():
             filename = part.get_filename()
 
@@ -84,13 +88,11 @@ class EmailProcessor:
                 print("No se pudo extraer CUIT, se ignora archivo")
                 continue
 
-            operadores = self.buscar_operador_por_cuit(cuit)
+            operadores = self.buscar_operador_por_cuit(cuit) 
 
             if not operadores:
                 print(f"CUIT {cuit} no encontrado")
                 continue
-
-            print(f"Operador: {operadores}")
 
             now = datetime.now()
             dest_key = self.generate_s3_key(filename, now)
@@ -104,9 +106,24 @@ class EmailProcessor:
 
             print(f"Guardado en: {self.s3_bucket_destino}/{dest_key}")
 
+            operadores_ids = [op["id"] for op in operadores]
+
+            invoice = InvoicesExtractedEmails(
+                cuit=cuit,
+                ids_operadores=operadores_ids,
+                s3_key=dest_key
+            )
+
+            data_to_insert.append(invoice)
+
+
             attachments_saved.append({
                 "filename": filename,
                 "s3_key": dest_key
-            }) 
+            })
         
+        with self.db_session() as session:
+            session.add_all(data_to_insert)
+            session.commit()
+
         return attachments_saved

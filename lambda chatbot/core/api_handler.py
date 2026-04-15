@@ -565,7 +565,7 @@ class ApiRequestHandler(RequestHandler):
 
             total_ms_lambda = (end - start) * 1000
 
-            self.user_context.metrics_questions(total_ms, total_tokens, total_steps, input_to_metrics, str(total_ms_lambda).split(".")[0])
+            self.user_context.metrics_questions(total_ms, total_tokens, total_steps, input_to_metrics, str(total_ms_lambda).split(".")[0], output_text)
 
         except Exception as e:
             self.logger.error(f"Error en API Gateway: {str(e)}")
