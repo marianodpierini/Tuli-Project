@@ -418,18 +418,19 @@ class ApiRequestHandler(RequestHandler):
                             self.logger.error(f"Error decodificando chunk: {decode_error}")
 
                     if 'trace' in event:
-                        trace_data = event['trace'].get('trace', {}).get('orchestrationTrace', {})
-                        if 'modelInvocationOutput' in trace_data:
-                            self.user_context.update_use_tokens(source, trace_data=trace_data)
+                        trace_root = event["trace"].get("trace", {})
+                        trace_steps = trace_root.get("traceSteps", [])
 
-                            total_ms += int(trace_data.get("modelInvocationOutput", {}).get("metadata", {}).get("totalTimeMs", 0))
-                            usage = (
-                                trace_data.get("modelInvocationOutput", {})
-                                .get("metadata", {})
-                                .get("usage", {})
-                            )
-                            total = usage.get("inputTokens", 0) + usage.get("outputTokens", 0)
-                            total_tokens += total
+                        print(f"Trace steps: {trace_root}")
+
+                        for step in trace_steps:
+                            metadata = step.get("modelInvocationOutput", {}).get("metadata", {})
+                            usage = metadata.get("usage", {})
+
+                            input_tokens = usage.get("inputTokens", 0)
+                            output_tokens = usage.get("outputTokens", 0)
+
+                            total_tokens += input_tokens + output_tokens
                             total_steps += 1
 
             else:

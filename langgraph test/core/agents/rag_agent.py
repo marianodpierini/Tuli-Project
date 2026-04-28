@@ -95,17 +95,17 @@ class RagAgent:
                 self.logger.error(f"Tipo inesperado en 'completion': {type(event_stream)}")
 
             self.logger.info(f"[AGENT SQL RESPONSE] Respuesta del agente: {assistant_response.strip()}")
-            self.agent_responses_feedback.put_item(Item={
-                "id_thread": self.event.body["space_name"],
-                "last_update_time": datetime.now().isoformat(),
-                "bot_response_text": assistant_response.strip(),
-                "user_question_text": last_message,
-                "user": self.event.body["email"],
-                "agend_id": "RFPORJJMOR",
-                "channel": self.source,
-                "created_at": date.today().isoformat(),
-                "expires_at": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
-            })
+            # self.agent_responses_feedback.put_item(Item={
+            #     "id_thread": self.event.body["space_name"],
+            #     "last_update_time": datetime.now().isoformat(),
+            #     "bot_response_text": assistant_response.strip(),
+            #     "user_question_text": last_message,
+            #     "user": self.event.body["email"],
+            #     "agend_id": "RFPORJJMOR",
+            #     "channel": self.source,
+            #     "created_at": date.today().isoformat(),
+            #     "expires_at": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
+            # })
             return assistant_response.strip()
         
         except Exception as e:

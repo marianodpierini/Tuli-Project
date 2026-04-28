@@ -466,6 +466,9 @@ class LanggraphManager:
         if state["needs_rag"]:
             return "rag"
         return "end"
+
+    def dispatch_node(self, state: AgentState):
+        return state
     
     def build_graph(self):
         builder = StateGraph(AgentState)
@@ -474,6 +477,7 @@ class LanggraphManager:
         builder.add_node("sql_agent", self.sql_agent_node)
         builder.add_node("rag_agent", self.rag_agent_node)
         builder.add_node("synthesis", self.synthesis_node)
+        builder.add_node("dispatcher", self.dispatch_node)
 
         builder.set_entry_point("supervisor")
 
@@ -483,10 +487,13 @@ class LanggraphManager:
             {
                 "sql": "sql_agent",
                 "rag": "rag_agent",
-                "both": "sql_agent",  # primero SQL, luego RAG
+                "both": "dispatcher",
                 "end": END
             }
         )
+
+        builder.add_edge("dispatcher", "sql_agent")
+        builder.add_edge("dispatcher", "rag_agent")
 
         builder.add_edge("sql_agent", "synthesis")
         builder.add_edge("rag_agent", "synthesis")
