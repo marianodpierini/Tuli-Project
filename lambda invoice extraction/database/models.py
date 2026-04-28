@@ -1,4 +1,13 @@
-from sqlalchemy import Column, Text, DateTime, Integer, func, Numeric, ForeignKey, Boolean
+from sqlalchemy import (
+    Column,
+    Text,
+    DateTime,
+    Integer,
+    func,
+    Numeric,
+    ForeignKey,
+    Boolean,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
@@ -26,7 +35,7 @@ class InvoicesExtractedEmails(Base):
     services = relationship(
         "ServicesExtractedEmails",
         back_populates="invoice",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
 
@@ -36,9 +45,7 @@ class ServicesExtractedEmails(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     invoice_id = Column(
-        Integer,
-        ForeignKey("facturas_bot.invoices_extracted_emails.id"),
-        nullable=False
+        Integer, ForeignKey("facturas_bot.invoices_extracted_emails.id"), nullable=False
     )
     codigo = Column(Text)
     pasajero = Column(Text)
@@ -52,7 +59,4 @@ class ServicesExtractedEmails(Base):
     pending = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
 
-    invoice = relationship(
-        "InvoicesExtractedEmails",
-        back_populates="services"
-    )
+    invoice = relationship("InvoicesExtractedEmails", back_populates="services")

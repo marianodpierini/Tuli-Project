@@ -16,10 +16,7 @@ def get_facturas():
     now = datetime.now()
 
     prefix = (
-        f"facturas/"
-        f"Año={now.year}/"
-        f"Mes={now.month:02d}/"
-        f"Dia={now.day:02d}/"
+        f"facturas/" f"Año={now.year}/" f"Mes={now.month:02d}/" f"Dia={now.day:02d}/"
     )
 
     print(f"Buscando facturas en: {prefix}")
@@ -28,10 +25,7 @@ def get_facturas():
 
     paginator = s3.get_paginator("list_objects_v2")
 
-    for page in paginator.paginate(
-        Bucket=BUCKET,
-        Prefix=prefix
-    ):
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
         contents = page.get("Contents", [])
 
         for obj in contents:
@@ -42,11 +36,7 @@ def get_facturas():
 
             filename = key.split("/")[-1]
 
-            facturas.append({
-                "id": key,
-                "s3_key": key,
-                "filename": filename
-            })
+            facturas.append({"id": key, "s3_key": key, "filename": filename})
 
     print(f"Facturas encontradas: {len(facturas)}")
 
@@ -79,10 +69,8 @@ def split_filename(filename):
 def response(status, body):
     return {
         "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json"
-        },
-        "body": json.dumps(body)
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(body),
     }
 
 
@@ -118,10 +106,10 @@ def lambda_handler(event, context):
             "statusCode": 200,
             "headers": {
                 "Content-Type": "application/zip",
-                "Content-Disposition": "attachment; filename=facturas.zip"
+                "Content-Disposition": "attachment; filename=facturas.zip",
             },
             "body": base64.b64encode(zip_bytes).decode("utf-8"),
-            "isBase64Encoded": True
+            "isBase64Encoded": True,
         }
 
     except Exception as e:

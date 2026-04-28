@@ -11,7 +11,14 @@ from io import StringIO
 import boto3
 import pandas as pd
 import psycopg2
-from sqlalchemy import create_engine, text, Table, Column, MetaData, PrimaryKeyConstraint
+from sqlalchemy import (
+    create_engine,
+    text,
+    Table,
+    Column,
+    MetaData,
+    PrimaryKeyConstraint,
+)
 from sqlalchemy import Integer, Float, Text, Boolean, Date, DateTime, BigInteger
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
@@ -20,7 +27,7 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout,
     force=True,
-    format='%(asctime)s %(levelname)s %(name)s %(message)s'
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -39,7 +46,12 @@ def get_engine():
         f"postgresql+psycopg2://{s['username']}:{s['password']}@"
         f"{s['host']}:{s['port']}/{s['dbInstanceIdentifier']}"
     )
-    return create_engine(conn_str, pool_pre_ping=True, pool_size=10, connect_args={"options": "-csearch_path=aptour"})
+    return create_engine(
+        conn_str,
+        pool_pre_ping=True,
+        pool_size=10,
+        connect_args={"options": "-csearch_path=aptour"},
+    )
 
 
 @dataclass
@@ -54,13 +66,14 @@ class Config:
     exclude_from_hash: Tuple[str, ...] = tuple()
     staging_table: str = "staging_tmp"
 
+
 def list_parquet_keys(cfg: Config):
     yesterday = date.today() - timedelta(days=1)
     prefix = f"{cfg.base_prefix}/dt={yesterday.isoformat()}/"
     logger.info(f"Buscando archivos parquet en s3://{cfg.bucket}/{prefix}")
 
     keys = []
-    paginator = s3.get_paginator('list_objects_v2')
+    paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=cfg.bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             if obj["Key"].endswith(".parquet"):
@@ -70,7 +83,9 @@ def list_parquet_keys(cfg: Config):
     return keys
 
 
-def ensure_table_exists(table_name: str, parquet_path: str, pk: Tuple[str, ...], engine):
+def ensure_table_exists(
+    table_name: str, parquet_path: str, pk: Tuple[str, ...], engine
+):
     logger.info(f"Inicia proceso de validacion de existencia de tabla")
     meta = MetaData()
     meta.reflect(bind=engine)
@@ -99,7 +114,9 @@ def ensure_table_exists(table_name: str, parquet_path: str, pk: Tuple[str, ...],
             col_type = Date
         elif t.startswith("timestamp"):
             col_type = DateTime
-        elif t.startswith("struct") and any("timestamp" in str(child.type) for child in field.type):
+        elif t.startswith("struct") and any(
+            "timestamp" in str(child.type) for child in field.type
+        ):
             col_type = DateTime
         else:
             col_type = Text
@@ -144,7 +161,9 @@ def load_parquet_to_staging(cfg: Config, engine, keys):
     cur = raw_conn.cursor()
 
     cur.execute(f"DROP TABLE IF EXISTS {cfg.staging_table}")
-    cur.execute(f"CREATE TEMP TABLE {cfg.staging_table} (LIKE {cfg.table} INCLUDING DEFAULTS)")
+    cur.execute(
+        f"CREATE TEMP TABLE {cfg.staging_table} (LIKE {cfg.table} INCLUDING DEFAULTS)"
+    )
 
     total_rows = 0
 
@@ -161,12 +180,16 @@ def load_parquet_to_staging(cfg: Config, engine, keys):
             for col in df.columns:
                 dtype = pg_cols.get(col)
                 if not dtype:
-                    continue 
+                    continue
 
                 target = PG_TYPE_CASTS.get(dtype, "string")
 
                 if target == "int":
-                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("Int64")
+                    df[col] = (
+                        pd.to_numeric(df[col], errors="coerce")
+                        .fillna(0)
+                        .astype("Int64")
+                    )
 
                 elif target == "float":
                     df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -185,10 +208,7 @@ def load_parquet_to_staging(cfg: Config, engine, keys):
 
             csv_buf = StringIO()
             df.to_csv(
-                csv_buf,
-                index=False,
-                header=False,
-                date_format="%Y-%m-%d %H:%M:%S"
+                csv_buf, index=False, header=False, date_format="%Y-%m-%d %H:%M:%S"
             )
             csv_buf.seek(0)
             cur.copy_expert(f"COPY {cfg.staging_table} FROM STDIN WITH CSV", csv_buf)
@@ -200,7 +220,6 @@ def load_parquet_to_staging(cfg: Config, engine, keys):
     cur.close()
     raw_conn.close()
     logger.info(f"Cargadas {total_rows} filas en staging")
-
 
 
 def merge_staging_into_target(cfg: Config, engine):
@@ -222,12 +241,16 @@ def merge_staging_into_target(cfg: Config, engine):
 
 def get_table_columns(table_name: str, engine):
     with engine.connect() as conn:
-        result = conn.execute(text(f"""
+        result = conn.execute(
+            text(
+                f"""
             SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_name = '{table_name.split('.')[-1]}'
             ORDER BY ordinal_position
-        """))
+        """
+            )
+        )
         return {r[0]: r[1] for r in result}
 
 
@@ -256,12 +279,14 @@ def lambda_handler(event, context):
         table=os.environ["TABLE_NAME"],
         pk=("id_res", "numero"),
         apply=os.getenv("APPLY", "false").lower() == "true",
-        exclude_from_hash=tuple(os.getenv("EXCLUDE_FROM_HASH", "").split(",")) if os.getenv("EXCLUDE_FROM_HASH") else tuple(),
+        exclude_from_hash=(
+            tuple(os.getenv("EXCLUDE_FROM_HASH", "").split(","))
+            if os.getenv("EXCLUDE_FROM_HASH")
+            else tuple()
+        ),
     )
 
     engine = get_engine()
     process(cfg, engine)
 
-    return {
-        "status": "ok"
-    }
+    return {"status": "ok"}

@@ -31,7 +31,10 @@ COMMON_VERB_PATTERNS = [
 ]
 
 # Palabras clave del dominio (ajustá a tu negocio)
-DOMAIN_KEYWORDS_PATTERN = r"\b(ventas|pasajeros|rentabilidad|ingresos|reservas|margen)\b"
+DOMAIN_KEYWORDS_PATTERN = (
+    r"\b(ventas|pasajeros|rentabilidad|ingresos|reservas|margen)\b"
+)
+
 
 def normalize_decimals(obj):
     if isinstance(obj, list):
@@ -41,6 +44,7 @@ def normalize_decimals(obj):
     if isinstance(obj, Decimal):
         return str(obj)
     return obj
+
 
 def normalize_event(event):
     enriched_event = event
@@ -53,10 +57,13 @@ def normalize_event(event):
         is_base64 = event.get("isBase64Encoded", False)
 
         if is_base64 and isinstance(raw_body, str):
-                import base64
-                raw_body = base64.b64decode(raw_body).decode("utf-8")
+            import base64
 
-        if headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
+            raw_body = base64.b64decode(raw_body).decode("utf-8")
+
+        if headers.get("Content-Type", "").startswith(
+            "application/x-www-form-urlencoded"
+        ):
             params = parse_qs(raw_body)
 
             message = params.get("Body", [""])[0]
@@ -68,22 +75,28 @@ def normalize_event(event):
                 "path": "/webhooks/whatsapp",
                 "httpMethod": "POST",
                 "headers": headers,
-                "multiValueHeaders": {k: [v] if not isinstance(v, list) else v for k, v in headers.items()},
+                "multiValueHeaders": {
+                    k: [v] if not isinstance(v, list) else v for k, v in headers.items()
+                },
                 "queryStringParameters": event.get("queryStringParameters"),
-                "multiValueQueryStringParameters": event.get("multiValueQueryStringParameters"),
+                "multiValueQueryStringParameters": event.get(
+                    "multiValueQueryStringParameters"
+                ),
                 "pathParameters": event.get("pathParameters"),
                 "stageVariables": event.get("stageVariables"),
                 "requestContext": event.get("requestContext", {}),
-                "body": json.dumps({
-                    "from": from_number,
-                    "to": to_number,
-                    "message": message,
-                    "raw": params
-                }),
+                "body": json.dumps(
+                    {
+                        "from": from_number,
+                        "to": to_number,
+                        "message": message,
+                        "raw": params,
+                    }
+                ),
                 "isBase64Encoded": False,
-                "source": "whatsapp"
+                "source": "whatsapp",
             }
-        
+
         elif path.endswith("/google"):
             body_json = json.loads(raw_body)
 
@@ -91,14 +104,9 @@ def normalize_event(event):
             space_name = body_json.get("space", "")
             thread_name = body_json.get("thread", "")
 
-            sender = (
-                body_json.get("rawEvent", {})
-                    .get("message", {})
-                    .get("sender", {})
-            )
+            sender = body_json.get("rawEvent", {}).get("message", {}).get("sender", {})
             sender_email = sender.get("email", "")
             sender_name = sender.get("displayName", "")
-
 
             enriched_event = {
                 "resource": "/webhooks/google-test",
@@ -106,63 +114,65 @@ def normalize_event(event):
                 "httpMethod": "POST",
                 "headers": headers,
                 "requestContext": event.get("requestContext", {}),
-                "body": json.dumps({
-                    "text": message,
-                    "name": sender_name,
-                    "email": sender_email,
-                    "space_name": space_name,
-                    "thread_name": thread_name,
-                    "raw": body_json,
-                }),
+                "body": json.dumps(
+                    {
+                        "text": message,
+                        "name": sender_name,
+                        "email": sender_email,
+                        "space_name": space_name,
+                        "thread_name": thread_name,
+                        "raw": body_json,
+                    }
+                ),
                 "isBase64Encoded": False,
-                "source": "google_chat"
+                "source": "google_chat",
             }
 
             print(enriched_event)
-    
+
     return enriched_event
 
 
-def valite_existing_response(session_id: str, keywords: List[str], user_input: str, boto_config):
+def valite_existing_response(
+    session_id: str, keywords: List[str], user_input: str, boto_config
+):
 
-        client = boto3.client('bedrock-agent-runtime', region_name='us-east-1', config=boto_config)
+    client = boto3.client(
+        "bedrock-agent-runtime", region_name="us-east-1", config=boto_config
+    )
 
-        query_embedding = titan_embed(user_input, keywords, boto_config)
+    query_embedding = titan_embed(user_input, keywords, boto_config)
 
-        with SessionLocal() as session:
+    with SessionLocal() as session:
 
-            query_vec = literal(
-                query_embedding,
-                type_=Vector(len(query_embedding))
+        query_vec = literal(query_embedding, type_=Vector(len(query_embedding)))
+
+        distance = SuggestedQuestions.embedding.cosine_distance(query_vec)
+        similarity = (1 - distance).label("similarity")
+
+        stmt = (
+            session.query(SuggestedQuestions, similarity)
+            .filter(
+                SuggestedQuestions.activa.is_(True),
+                SuggestedQuestions.embedding.isnot(None),
             )
+            .order_by(similarity.desc())
+            .limit(3)
+        )
 
-            distance = SuggestedQuestions.embedding.cosine_distance(query_vec)
-            similarity = (1 - distance).label("similarity")
+        results = stmt.all()
 
-            stmt = (
-                session.query(
-                    SuggestedQuestions,
-                    similarity
-                )
-                .filter(SuggestedQuestions.activa.is_(True), SuggestedQuestions.embedding.isnot(None))
-                .order_by(similarity.desc())
-                .limit(3)
-            )
+    if len(results) > 0:
+        best, similarity = results[0]
+        if similarity is not None and similarity >= 0.80:
+            if best.sql_query is not None:
+                sql_query = best.sql_query
+                query_results = session.execute(text(sql_query))
 
-            results = stmt.all()
+                query_result_dicts = [dict(row._mapping) for row in query_results]
+                safe_results = normalize_decimals(query_result_dicts)
 
-        if len(results) > 0:
-            best, similarity = results[0]
-            if similarity is not None and similarity >= 0.80:
-                if best.sql_query is not None:
-                    sql_query = best.sql_query
-                    query_results = session.execute(text(sql_query))
-
-                    query_result_dicts = [dict(row._mapping) for row in query_results]
-                    safe_results = normalize_decimals(query_result_dicts)
-
-
-                    input_text = f"""
+                input_text = f"""
                         El usuario preguntó: "{user_input}"
 
                         La consulta SQL asociada (ID {best.id}) devolvió estos resultados:
@@ -172,23 +182,23 @@ def valite_existing_response(session_id: str, keywords: List[str], user_input: s
                         usando los resultados de la consulta.
                         """
 
-                    params = {
-                        'agentId': 'DRSOAFDOTR',         # Reemplazá con tu agente real si hace falta
-                        'agentAliasId': 'XKJTFFEMPC',    # Reemplazá si tenés otro alias
-                        'sessionId': session_id,
-                        'inputText': input_text,
-                        'enableTrace': False,
-                    }
+                params = {
+                    "agentId": "DRSOAFDOTR",  # Reemplazá con tu agente real si hace falta
+                    "agentAliasId": "XKJTFFEMPC",  # Reemplazá si tenés otro alias
+                    "sessionId": session_id,
+                    "inputText": input_text,
+                    "enableTrace": False,
+                }
 
-                    response = client.invoke_agent(**params)
+                response = client.invoke_agent(**params)
 
-                    return response
-                else:
-                    return "Pregunta sin query"
+                return response
+            else:
+                return "Pregunta sin query"
 
-        else:
-            return None
-            
+    else:
+        return None
+
 
 def is_context_independent_heuristic(question: str) -> Optional[bool]:
     """
@@ -221,14 +231,15 @@ def is_context_independent_heuristic(question: str) -> Optional[bool]:
 
     return None
 
-def classify_with_bedrock(question: str) -> bool:
-        """
-        Usa un LLM en Bedrock para decidir.
-        Devuelve True si es independiente, False si es dependiente.
-        """
-        client = boto3.client("bedrock-runtime", region_name="us-east-1")
 
-        prompt = f"""Human:
+def classify_with_bedrock(question: str) -> bool:
+    """
+    Usa un LLM en Bedrock para decidir.
+    Devuelve True si es independiente, False si es dependiente.
+    """
+    client = boto3.client("bedrock-runtime", region_name="us-east-1")
+
+    prompt = f"""Human:
         Classify if this question needs previous conversation context.
 
         Question: "{question}"
@@ -240,33 +251,31 @@ def classify_with_bedrock(question: str) -> bool:
         Assistant:
         """
 
-        response = client.invoke_model(
-            modelId="us.anthropic.claude-haiku-4-5-20251001-v1:0",
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps({
+    response = client.invoke_model(
+        modelId="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps(
+            {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": 30,
                 "temperature": 0.0,
                 "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt}
-                        ]
-                    }
-                ]
-            })
-        )
+                    {"role": "user", "content": [{"type": "text", "text": prompt}]}
+                ],
+            }
+        ),
+    )
 
-        result = json.loads(response["body"].read())
-        input_tokens = result["usage"]["input_tokens"]
-        output_tokens = result["usage"]["output_tokens"]
-        output = result["content"][0]["text"].strip().lower()
+    result = json.loads(response["body"].read())
+    input_tokens = result["usage"]["input_tokens"]
+    output_tokens = result["usage"]["output_tokens"]
+    output = result["content"][0]["text"].strip().lower()
 
-        return output == "NO", input_tokens + output_tokens
+    return output == "NO", input_tokens + output_tokens
 
-def get_agent_id(user_email:str):
+
+def get_agent_id(user_email: str):
     flag_doc_agent = os.environ["FLAG_DOC_AGENT"].lower() == "true"
     dict_data = json.loads(os.environ["AGENT_TO_USERS"])
     if flag_doc_agent:
@@ -280,23 +289,21 @@ def get_agent_id(user_email:str):
 
 def titan_embed(text: str, keywords: list, boto_config) -> list[float]:
     client = boto3.client(
-        "bedrock-runtime",
-        region_name="us-east-1",
-        config=boto_config
+        "bedrock-runtime", region_name="us-east-1", config=boto_config
     )
 
-    text_for_embedding = " ".join([
-        text or "",
-        " ".join(keywords or []),
-    ])
-    
+    text_for_embedding = " ".join(
+        [
+            text or "",
+            " ".join(keywords or []),
+        ]
+    )
+
     response = client.invoke_model(
         modelId="amazon.titan-embed-text-v2:0",
         contentType="application/json",
         accept="application/json",
-        body=json.dumps({
-            "inputText": text_for_embedding
-        }),
+        body=json.dumps({"inputText": text_for_embedding}),
     )
 
     body = json.loads(response["body"].read())

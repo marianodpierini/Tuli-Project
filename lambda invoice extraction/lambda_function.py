@@ -29,18 +29,13 @@ DEST_BUCKET = os.environ.get("DEST_BUCKET", "aero-turi-documents")
 
 
 def cargar_operadores():
-    response = s3.get_object(
-        Bucket=OPERADORES_BUCKET,
-        Key=OPERADORES_KEY
-    )
+    response = s3.get_object(Bucket=OPERADORES_BUCKET, Key=OPERADORES_KEY)
     data = json.loads(response["Body"].read())
     return data
 
+
 def get_last_history_id():
-    response = dynamodb.get_item(
-        TableName="gmail_state",
-        Key={"id": {"S": "global"}}
-    )
+    response = dynamodb.get_item(TableName="gmail_state", Key={"id": {"S": "global"}})
 
     return response.get("Item", {}).get("last_history_id", {}).get("S")
 
@@ -48,30 +43,28 @@ def get_last_history_id():
 def save_history_id(history_id):
     dynamodb.put_item(
         TableName="gmail_state",
-        Item={
-            "id": {"S": "global"},
-            "last_history_id": {"S": str(history_id)}
-        }
+        Item={"id": {"S": "global"}, "last_history_id": {"S": str(history_id)}},
     )
+
 
 def is_message_processed(message_id):
     response = dynamodb.get_item(
-        TableName="gmail_processed_messages",
-        Key={"message_id": {"S": message_id}}
+        TableName="gmail_processed_messages", Key={"message_id": {"S": message_id}}
     )
     return "Item" in response
 
 
 def mark_message_processed(message_id):
     dynamodb.put_item(
-        TableName="gmail_processed_messages",
-        Item={"message_id": {"S": message_id}}
+        TableName="gmail_processed_messages", Item={"message_id": {"S": message_id}}
     )
+
 
 def get_gmail_secret():
     secret_data = secrets.get_secret_value(SecretId="gmail/token/facturas_bot")
     data = json.loads(secret_data["SecretString"])
-    return json.loads(data['token_facturas_bot'])
+    return json.loads(data["token_facturas_bot"])
+
 
 def get_subscriber():
     response = s3.get_object(Bucket=OPERADORES_BUCKET, Key=KEY_SVS_ACC)
@@ -79,24 +72,18 @@ def get_subscriber():
 
     creds_json = json.loads(content)
 
-    credentials = service_account.Credentials.from_service_account_info(
-        creds_json
-    )
+    credentials = service_account.Credentials.from_service_account_info(creds_json)
 
     return pubsub_v1.SubscriberClient(credentials=credentials)
 
 
 def pull_messages(subscriber):
     subscription_path = subscriber.subscription_path(
-        "turi-chat-476619",
-        "gmail-facturas-topic-sub"
+        "turi-chat-476619", "gmail-facturas-topic-sub"
     )
 
     response = subscriber.pull(
-        request={
-            "subscription": subscription_path,
-            "max_messages": 5
-        }
+        request={"subscription": subscription_path, "max_messages": 5}
     )
 
     messages = []
@@ -104,10 +91,7 @@ def pull_messages(subscriber):
     for msg in response.received_messages:
         data = json.loads(msg.message.data.decode("utf-8"))
 
-        messages.append({
-            "data": data,
-            "ack_id": msg.ack_id
-        })
+        messages.append({"data": data, "ack_id": msg.ack_id})
 
     return messages, subscription_path
 
@@ -115,12 +99,8 @@ def pull_messages(subscriber):
 def ack_messages(subscriber, subscription_path, ack_ids):
     if ack_ids:
         subscriber.acknowledge(
-            request={
-                "subscription": subscription_path,
-                "ack_ids": ack_ids
-            }
+            request={"subscription": subscription_path, "ack_ids": ack_ids}
         )
-
 
 
 def build_gmail_credentials(secret_data):
@@ -129,7 +109,7 @@ def build_gmail_credentials(secret_data):
         refresh_token=secret_data["refresh_token"],
         token_uri="https://oauth2.googleapis.com/token",
         client_id=secret_data["client_id"],
-        client_secret=secret_data["client_secret"]
+        client_secret=secret_data["client_secret"],
     )
 
     if creds.expired and creds.refresh_token:
@@ -144,7 +124,7 @@ def get_gmail_service(secret):
         refresh_token=secret["refresh_token"],
         token_uri="https://oauth2.googleapis.com/token",
         client_id=secret["client_id"],
-        client_secret=secret["client_secret"]
+        client_secret=secret["client_secret"],
     )
 
     if creds.expired and creds.refresh_token:
@@ -154,11 +134,14 @@ def get_gmail_service(secret):
 
 
 def get_message_ids(service, start_history_id):
-    results = service.users().history().list(
-        userId="me",
-        startHistoryId=start_history_id,
-        historyTypes=["messageAdded"]
-    ).execute()
+    results = (
+        service.users()
+        .history()
+        .list(
+            userId="me", startHistoryId=start_history_id, historyTypes=["messageAdded"]
+        )
+        .execute()
+    )
 
     ids = []
 
@@ -170,14 +153,9 @@ def get_message_ids(service, start_history_id):
 
 
 def get_raw_email(service, msg_id):
-    msg = service.users().messages().get(
-        userId="me",
-        id=msg_id,
-        format="raw"
-    ).execute()
+    msg = service.users().messages().get(userId="me", id=msg_id, format="raw").execute()
 
     return base64.urlsafe_b64decode(msg["raw"])
-
 
 
 def parse_email(raw_email):
@@ -188,12 +166,7 @@ def process_email_raw(raw_email, operadores):
     parsed_msg = BytesParser(policy=policy.default).parsebytes(raw_email)
 
     processor = EmailProcessor(
-        parsed_msg,
-        operadores,
-        DEST_BUCKET,
-        s3,
-        SessionLocal,
-        bedrock
+        parsed_msg, operadores, DEST_BUCKET, s3, SessionLocal, bedrock
     )
 
     return processor.process_email()
@@ -209,8 +182,9 @@ def process_history(service, history_id, operadores):
         process_email_raw(raw_email, operadores)
 
 
-
-def process_pubsub_messages(subscriber, messages, subscription_path, gmail_service, operadores):
+def process_pubsub_messages(
+    subscriber, messages, subscription_path, gmail_service, operadores
+):
     last_history_id = get_last_history_id()
 
     if not last_history_id:
@@ -239,17 +213,10 @@ def process_pubsub_messages(subscriber, messages, subscription_path, gmail_servi
 
             raw_email = get_raw_email(gmail_service, msg_id)
 
-            parsed_msg = BytesParser(
-                policy=policy.default
-            ).parsebytes(raw_email)
+            parsed_msg = BytesParser(policy=policy.default).parsebytes(raw_email)
 
             email_processor = EmailProcessor(
-                parsed_msg,
-                operadores,
-                DEST_BUCKET,
-                s3,
-                SessionLocal,
-                bedrock
+                parsed_msg, operadores, DEST_BUCKET, s3, SessionLocal, bedrock
             )
 
             email_processor.process_email()
@@ -265,7 +232,6 @@ def process_pubsub_messages(subscriber, messages, subscription_path, gmail_servi
         print(f"Nuevo historyId guardado: {max_history_id}")
 
     ack_messages(subscriber, subscription_path, ack_ids)
-
 
 
 def lambda_handler(event, context):
@@ -284,17 +250,10 @@ def lambda_handler(event, context):
         operadores = cargar_operadores()
 
         process_pubsub_messages(
-            subscriber,
-            messages,
-            subscription_path,
-            gmail_service,
-            operadores
+            subscriber, messages, subscription_path, gmail_service, operadores
         )
 
-        return {
-            "statusCode": 200,
-            "body": "Procesado correctamente"
-        }
+        return {"statusCode": 200, "body": "Procesado correctamente"}
 
     except Exception as e:
         print("ERROR:", str(e))

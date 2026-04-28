@@ -8,29 +8,36 @@ import time as pytime
 
 from dataclasses import dataclass
 from typing import Dict, Optional, Union, Callable, Any
-#from cachetools import TTLCache
+
+# from cachetools import TTLCache
 from logging import Logger
 
-from core.improved_context_classes import EnhancedUserContext, CustomJSONEncoder, EnhancedQueryManager, EnhancedQueryExecutor
+from core.improved_context_classes import (
+    EnhancedUserContext,
+    CustomJSONEncoder,
+    EnhancedQueryManager,
+    EnhancedQueryExecutor,
+)
 
 CACHE_MAX_SIZE = 100
 CACHE_TTL = 3600  # 1 hora
-#QUERY_CACHE = TTLCache(maxsize=CACHE_MAX_SIZE, ttl=CACHE_TTL)
+# QUERY_CACHE = TTLCache(maxsize=CACHE_MAX_SIZE, ttl=CACHE_TTL)
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "https://front-app-ia.s3.us-east-1.amazonaws.com",
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Headers": "Content-Type,Authorization",
-    "Access-Control-Allow-Methods": "OPTIONS,POST"
+    "Access-Control-Allow-Methods": "OPTIONS,POST",
 }
 
 ALLOWED_TABLES = os.getenv("ALLOWED_TABLES").split(",")
 
-dynamodb = boto3.resource('dynamodb')
-user_questions_table = dynamodb.Table('user_questions_table')
-users_sessions_table = dynamodb.Table('users_sessions_table')
+dynamodb = boto3.resource("dynamodb")
+user_questions_table = dynamodb.Table("user_questions_table")
+users_sessions_table = dynamodb.Table("users_sessions_table")
+
 
 @dataclass
-class APIGatewayModel():
+class APIGatewayModel:
     http_method: Optional[str]
     resource: Optional[str]
     authorization: Optional[str]
@@ -39,8 +46,9 @@ class APIGatewayModel():
     body: Optional[Dict[str, str]]
     source: Optional[str]
 
+
 @dataclass
-class BedrockEvent():
+class BedrockEvent:
     http_method: Optional[str]
     session_id: Optional[str]
     action_group: Optional[str]
@@ -51,8 +59,15 @@ class BedrockEvent():
     prompt_session_attributes: Optional[Dict[str, str]]
     agent: Optional[Dict[str, str]]
 
+
 class RequestHandler:
-    def __init__(self, logger: Logger, req_id: str, event: Union[APIGatewayModel, BedrockEvent], lambda_handler: Callable[[dict, Any], Any]):
+    def __init__(
+        self,
+        logger: Logger,
+        req_id: str,
+        event: Union[APIGatewayModel, BedrockEvent],
+        lambda_handler: Callable[[dict, Any], Any],
+    ):
         self.logger = logger
         self.start_time = pytime.time()
         self.event = event
@@ -67,39 +82,37 @@ class RequestHandler:
             "response": {
                 "httpMethod": http_method,
                 "httpStatusCode": status_code,
-                "responseBody": {
-                    "application/json": {
-                        "body": json_body
-                    }
-                }
+                "responseBody": {"application/json": {"body": json_body}},
             },
         }
 
     def initialize_managers(self):
         # Configuración del gestor de consultas
-            
+
         query_manager = EnhancedQueryManager(
             logger=self.logger,
-            allowed_tables=ALLOWED_TABLES, 
+            allowed_tables=ALLOWED_TABLES,
             max_query_length=3000,
-            query_timeout_ms=30000
+            query_timeout_ms=30000,
         )
-            
+
         executor = EnhancedQueryExecutor(self.logger, query_manager)
 
         return query_manager, executor
 
     def get_user_context(self) -> EnhancedUserContext:
         raise NotImplementedError
-    
+
     def handle_event(self):
         raise NotImplementedError
-    
+
     def compress_data(self, data):
         """Comprime la respuesta JSON en gzip y la codifica en Base64"""
-        compressed_bytes = gzip.compress(json.dumps(data, cls=CustomJSONEncoder).encode('utf-8')) 
-        return base64.b64encode(compressed_bytes).decode('utf-8')
-        
+        compressed_bytes = gzip.compress(
+            json.dumps(data, cls=CustomJSONEncoder).encode("utf-8")
+        )
+        return base64.b64encode(compressed_bytes).decode("utf-8")
+
     def validate_user_session(self, session_id, canal, ttl_hours=30):
         response = users_sessions_table.get_item(Key={"session_id": session_id})
         item = response.get("Item")
@@ -113,10 +126,6 @@ class RequestHandler:
             return item["session_id"]
 
         users_sessions_table.put_item(
-            Item={
-                "session_id": session_id,
-                "channel": canal,
-                "expires_at": expires_at
-            }
+            Item={"session_id": session_id, "channel": canal, "expires_at": expires_at}
         )
         return session_id

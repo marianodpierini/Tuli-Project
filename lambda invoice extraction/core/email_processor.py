@@ -8,10 +8,13 @@ from io import BytesIO
 from database.models import InvoicesExtractedEmails, ServicesExtractedEmails
 from core.invoices_validation import InvoicesValidation
 
-CUIT_AERO = "30707362142" 
+CUIT_AERO = "30707362142"
+
 
 class EmailProcessor:
-    def __init__(self, msg, operadores, s3_bucket_destino, s3_client, db_session, bedrock_client):
+    def __init__(
+        self, msg, operadores, s3_bucket_destino, s3_client, db_session, bedrock_client
+    ):
         self.msg = msg
         self.operadores = operadores
         self.s3_bucket_destino = s3_bucket_destino
@@ -19,7 +22,11 @@ class EmailProcessor:
         self.db_session = db_session
         self.bedrock_client = bedrock_client
 
-    
+    def normalizar_codigo(self, codigo: str) -> str:
+        if codigo.startswith("540"):
+            return codigo[3:]
+        return codigo
+
     def generate_s3_key(self, filename, now):
         return (
             f"facturas/"
@@ -29,19 +36,13 @@ class EmailProcessor:
             f"{filename}"
         )
 
-
     def is_valid_invoice(self, content_type, filename):
-        allowed_types = [
-            "application/pdf",
-            "text/xml",
-            "application/xml"
-        ]
+        allowed_types = ["application/pdf", "text/xml", "application/xml"]
 
         allowed_extensions = (".pdf", ".xml")
 
-        return (
-            content_type in allowed_types or
-            filename.lower().endswith(allowed_extensions)
+        return content_type in allowed_types or filename.lower().endswith(
+            allowed_extensions
         )
 
     def buscar_operador_por_cuit(self, cuit):
@@ -53,10 +54,7 @@ class EmailProcessor:
         return None
 
     def pdf_a_imagenes_base64(self, file_bytes):
-        images = convert_from_bytes(
-            file_bytes,
-            poppler_path="/opt/bin"  # 👈 importante en Lambda
-        )
+        images = convert_from_bytes(file_bytes, poppler_path="/opt/bin")
 
         imagenes_base64 = []
 
@@ -74,14 +72,16 @@ class EmailProcessor:
 
         # Agregar imágenes al mensaje
         for img_b64 in imagenes_base64:
-            content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": img_b64
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": img_b64,
+                    },
                 }
-            })
+            )
 
         prompt = """
             Analizá esta factura.
@@ -105,24 +105,18 @@ class EmailProcessor:
             - Devolver SOLO JSON válido
         """
 
-        content.append({
-            "type": "text",
-            "text": prompt
-        })
+        content.append({"type": "text", "text": prompt})
 
         response = self.bedrock_client.invoke_model(
             modelId="us.anthropic.claude-haiku-4-5-20251001-v1:0",
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 1500,
-                "temperature": 0,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": content
-                    }
-                ]
-            })
+            body=json.dumps(
+                {
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 1500,
+                    "temperature": 0,
+                    "messages": [{"role": "user", "content": content}],
+                }
+            ),
         )
 
         response_body = json.loads(response["body"].read())
@@ -168,7 +162,7 @@ class EmailProcessor:
                 continue
 
             operadores = self.buscar_operador_por_cuit(cuit)
-            
+
             if not operadores:
                 print(f"CUIT {cuit} no encontrado")
                 continue
@@ -185,7 +179,7 @@ class EmailProcessor:
                 Bucket=self.s3_bucket_destino,
                 Key=dest_key,
                 Body=file_bytes,
-                ContentType=content_type
+                ContentType=content_type,
             )
 
             print(f"Guardado en: {self.s3_bucket_destino}/{dest_key}")
@@ -198,7 +192,7 @@ class EmailProcessor:
                 fecha_factura=data_agent.get("fecha"),
                 razon_social=operadores[0]["razon_social"],
                 moneda=data_agent.get("moneda"),
-                importe_total=data_agent.get("importe_total_final")
+                importe_total=data_agent.get("importe_total_final"),
             )
 
             services = []
@@ -206,21 +200,17 @@ class EmailProcessor:
 
             for servicio in servicios_pdf:
                 service = ServicesExtractedEmails(
-                    codigo=servicio.get("producto"),
+                    codigo=self.normalizar_codigo(servicio.get("voucher")),
                     pasajero=servicio.get("nombre_del_viajero"),
-                    importe=servicio.get("importe")
+                    importe=servicio.get("importe"),
                 )
                 services.append(service)
 
             invoice.services = services
             data_to_insert.append(invoice)
 
+            attachments_saved.append({"filename": filename, "s3_key": dest_key})
 
-            attachments_saved.append({
-                "filename": filename,
-                "s3_key": dest_key
-            })
-        
         with self.db_session() as session:
             session.add_all(data_to_insert)
             session.commit()

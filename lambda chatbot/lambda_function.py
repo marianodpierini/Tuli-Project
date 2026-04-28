@@ -15,21 +15,23 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout,
     force=True,
-    format='%(asctime)s %(levelname)s %(name)s %(message)s'
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger(__name__)
 session_store = {}
+
 
 def get_params_api_gateway(event):
     return APIGatewayModel(
         http_method=event.get("httpMethod"),
         resource=event.get("resource"),
-        authorization=event.get('headers').get("Authorization"),
+        authorization=event.get("headers").get("Authorization"),
         request_context=event.get("requestContext"),
         headers=event.get("headers"),
         body=json.loads(event.get("body")),
-        source=event.get("source", "front")
+        source=event.get("source", "front"),
     )
+
 
 def get_params_bedrock(event):
     return BedrockEvent(
@@ -41,14 +43,17 @@ def get_params_bedrock(event):
         request_body=event.get("requestBody"),
         session_attributes=event.get("sessionAttributes"),
         prompt_session_attributes=event.get("promptSessionAttributes"),
-        agent=event.get("agent")
+        agent=event.get("agent"),
     )
 
+
 def is_api_gateway_event(event: dict) -> bool:
-    return 'httpMethod' in event and 'path' in event
+    return "httpMethod" in event and "path" in event
+
 
 def is_rule_event(event: dict) -> bool:
-    return 'message' in event and 'Scheduled Event' in event["message"]["detail-type"]
+    return "message" in event and "Scheduled Event" in event["message"]["detail-type"]
+
 
 def lambda_handler(event, context):
     """
@@ -60,7 +65,9 @@ def lambda_handler(event, context):
     start_time = pytime.time()
 
     # Obtener ID de request para seguimiento
-    req_id = event_normalize.get("requestContext", {}).get("requestId", context.aws_request_id)
+    req_id = event_normalize.get("requestContext", {}).get(
+        "requestId", context.aws_request_id
+    )
 
     try:
 
@@ -74,7 +81,11 @@ def lambda_handler(event, context):
         elif is_rule_event(event_normalize):
             logger.debug(f"[{req_id}] Evento tipo Scheduled detectado")
 
-            params = event_normalize["message"]["detail"]["users"] if len(event_normalize["message"]["detail"]["users"] ) > 0 else None
+            params = (
+                event_normalize["message"]["detail"]["users"]
+                if len(event_normalize["message"]["detail"]["users"]) > 0
+                else None
+            )
 
             handler = ScheduledHandler(logger, params)
             return handler.handle_event()
@@ -83,16 +94,20 @@ def lambda_handler(event, context):
 
             event = get_params_bedrock(event_normalize)
             handler = BedrockRequestHandler(logger, req_id, event, lambda_handler)
-            
+
             return handler.handle_event()
-        
+
     except Exception as e:
         execution_time = (pytime.time() - start_time) * 1000
         stack_trace = traceback.format_exc()
-        
+
         # Log estructurado del error principal
-        logger.error(f"LAMBDA_ERROR: {str(e)}, REQUEST_ID: {req_id}, EXECUTION_TIME: {execution_time}, STACK_TRACE: {stack_trace}")
-        
-        logger.error(f"[{req_id}] Error general en lambda_handler: {str(e)}\n{stack_trace}")
-    
+        logger.error(
+            f"LAMBDA_ERROR: {str(e)}, REQUEST_ID: {req_id}, EXECUTION_TIME: {execution_time}, STACK_TRACE: {stack_trace}"
+        )
+
+        logger.error(
+            f"[{req_id}] Error general en lambda_handler: {str(e)}\n{stack_trace}"
+        )
+
         return False

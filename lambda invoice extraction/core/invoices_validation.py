@@ -1,10 +1,16 @@
 from database.db_mysql import get_connection
 
+
 class InvoicesValidation:
     def __init__(self, data_agent, operator_ids):
         self.conn_mysql = get_connection()
         self.data_agent = data_agent
         self.operator_ids = operator_ids
+
+    def normalizar_codigo(self, codigo: str) -> str:
+        if codigo.startswith("540"):
+            return codigo[3:]
+        return codigo
 
     def buscar_servicios(self, codigos):
         try:
@@ -35,7 +41,9 @@ class InvoicesValidation:
                 indice = {}
 
                 for row in rows:
-                    codigos_en_campo = re.split(r'[\s,;\/]+', row["confirmation_code"] or "")
+                    codigos_en_campo = re.split(
+                        r"[\s,;\/]+", row["confirmation_code"] or ""
+                    )
 
                     for cod in codigos_en_campo:
                         cod = cod.strip()
@@ -77,29 +85,27 @@ class InvoicesValidation:
     def vincular_servicios(self):
         servicios = self.data_agent.get("servicios", [])
 
-        codigos = list({
-            s.get("producto")
-            for s in servicios
-            if s.get("producto")
-        })
+        codigos = list({self.normalizar_codigo(s.get("voucher")) for s in servicios if s.get("voucher")})
 
         if not codigos:
             return self.data_agent
 
         resultados = self.buscar_servicios(codigos)
 
-        reserve_ids = list({
-            r.get("reserve_id") or r.get("aptour_reserve_id")
-            for r in resultados.values()
-            if r
-        })
+        reserve_ids = list(
+            {
+                r.get("reserve_id") or r.get("aptour_reserve_id")
+                for r in resultados.values()
+                if r
+            }
+        )
 
         facturas = self.verificar_facturas(reserve_ids) if reserve_ids else {}
 
         servicios_enriquecidos = []
 
         for s in servicios:
-            codigo = s.get("producto")
+            codigo = self.normalizar_codigo(s.get("voucher", ""))
 
             encontrado = resultados.get(codigo)
 
@@ -121,7 +127,6 @@ class InvoicesValidation:
                 s["pendiente"] = True
 
             servicios_enriquecidos.append(s)
-
 
         if servicios_enriquecidos > 0:
             self.data_agent["servicios"] = servicios_enriquecidos

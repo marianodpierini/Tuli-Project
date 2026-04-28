@@ -13,13 +13,13 @@ from boto3.dynamodb.conditions import Key
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-dynamodb = boto3.resource('dynamodb')
-table = dynamodb.Table('chatbot_user_feedback_table')
+dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table("chatbot_user_feedback_table")
 agent_responses_feedback = dynamodb.Table("agent_responses_feedback")
 
 
 @dataclass
-class APIGatewayModel():
+class APIGatewayModel:
     http_method: Optional[str]
     resource: Optional[str]
     authorization: Optional[str]
@@ -32,14 +32,15 @@ def get_params_api_gateway(event):
     return APIGatewayModel(
         http_method=event.get("httpMethod"),
         resource=event.get("resource"),
-        authorization=event.get('headers').get("Authorization"),
+        authorization=event.get("headers").get("Authorization"),
         request_context=event.get("requestContext"),
         headers=event.get("headers"),
         body=json.loads(event.get("body")),
     )
 
+
 def get_user_context(event: APIGatewayModel):
-    identity = event.request_context.get('identity', {})
+    identity = event.request_context.get("identity", {})
 
     token = event.authorization.replace("Bearer ", "") if event.authorization else None
     user_email = None
@@ -65,7 +66,6 @@ def lambda_handler(event, context):
 
         feedback = event.body.get("text")
 
-        
         feedback = {
             "user_id": event.body.get("user"),
             "feedback_date": datetime.now().isoformat(),
@@ -78,7 +78,7 @@ def lambda_handler(event, context):
             resp = agent_responses_feedback.query(
                 KeyConditionExpression=Key("id_thread").eq(space_name),
                 ScanIndexForward=False,
-                Limit=1
+                Limit=1,
             )
 
             item = resp["Items"][0] if resp["Items"] else None
@@ -96,8 +96,8 @@ def lambda_handler(event, context):
             "headers": {
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Headers": "Content-Type",
-                "Access-Control-Allow-Methods": "OPTIONS,POST"
-            }
+                "Access-Control-Allow-Methods": "OPTIONS,POST",
+            },
         }
 
     except Exception as e:
@@ -105,5 +105,5 @@ def lambda_handler(event, context):
         return {
             "statusCode": 500,
             "body": json.dumps({"error": "Error al guardar feedback"}),
-            "headers": {"Access-Control-Allow-Origin": "*"}
+            "headers": {"Access-Control-Allow-Origin": "*"},
         }

@@ -1,4 +1,14 @@
-from sqlalchemy import Column, Float, BigInteger, Boolean, Text, DateTime, String, Integer, func
+from sqlalchemy import (
+    Column,
+    Float,
+    BigInteger,
+    Boolean,
+    Text,
+    DateTime,
+    String,
+    Integer,
+    func,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
@@ -6,15 +16,14 @@ from pgvector.sqlalchemy import Vector
 
 Base = declarative_base()
 
+
 class ServiciosTcktsRvas(Base):
     __tablename__ = "servicios_tckts_rvas"
     __table_args__ = {"schema": "aptour"}
 
     @declared_attr
     def __mapper_args__(cls):
-        return {
-            'primary_key': [cls._rowid]
-        }
+        return {"primary_key": [cls._rowid]}
 
     _rowid = Column(Integer, primary_key=True, autoincrement=True)
 
@@ -84,8 +93,8 @@ class SuggestedQuestions(Base):
     frecuencia = Column(Text)
     template_respuesta = Column(Text)
     name_mappings = Column(JSONB)
-    kb_document  = Column(Text)
+    kb_document = Column(Text)
     needs_clarification = Column(Text)
-    instrucciones_cortas  = Column(Text)
+    instrucciones_cortas = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
