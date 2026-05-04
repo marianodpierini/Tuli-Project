@@ -1,20 +1,37 @@
+import re
 from database.db_mysql import get_connection
-
+from parser_helpers.parser_functions import PARSERS_DICT
 
 class InvoicesValidation:
-    def __init__(self, data_agent, operator_ids):
-        self.conn_mysql = get_connection()
+    def __init__(self, data_agent, operadores):
         self.data_agent = data_agent
-        self.operator_ids = operator_ids
+        self.operadores = operadores
+        self.operator_ids = [op["id"] for op in operadores]
 
     def normalizar_codigo(self, codigo: str) -> str:
-        if codigo.startswith("540"):
-            return codigo[3:]
+        if not codigo:
+            return codigo
+
+        transformations = self.operadores[0].get("codigo_config", {}).get("transformations", [])
+
+        for t in transformations:
+            t_type = t.get("type")
+
+            parser_fn = PARSERS_DICT.get(t_type)
+
+            if not parser_fn:
+                print(f"Parser no soportado: {t_type}")
+                continue
+
+            codigo = parser_fn(codigo, t)
+
         return codigo
 
     def buscar_servicios(self, codigos):
+        conn_mysql = get_connection()
         try:
-            with self.conn_mysql.cursor() as cursor:
+            print(f"Buscando servicios para códigos: {codigos} y operadores: {self.operator_ids}")
+            with conn_mysql.cursor() as cursor:
                 placeholders_op = ",".join(["%s"] * len(self.operator_ids))
                 placeholders_cod = " OR ".join(
                     ["s.confirmation_code LIKE %s"] * len(codigos)
@@ -52,16 +69,18 @@ class InvoicesValidation:
 
                         if cod not in indice:
                             indice[cod] = row
-
+                            
+                print(f"Servicios encontrados: {rows}")
                 return indice
 
         finally:
-            self.conn_mysql.close()
+            conn_mysql.close()
 
     def verificar_facturas(self, reserve_ids):
-
+        conn_mysql = get_connection()
+        print(f"Verificando facturas para reservas: {reserve_ids}")
         try:
-            with self.conn_mysql.cursor() as cursor:
+            with conn_mysql.cursor() as cursor:
                 placeholders = ",".join(["%s"] * len(reserve_ids))
 
                 query = f"""
@@ -77,13 +96,16 @@ class InvoicesValidation:
                 for row in cursor.fetchall():
                     result[row["reserve_id"]] = row["factura"]
 
+                
+                print(f"Facturas encontradas: {result}")
                 return result
 
         finally:
-            self.conn_mysql.close()
+            conn_mysql.close()
 
     def vincular_servicios(self):
         servicios = self.data_agent.get("servicios", [])
+        needs_retry = False
 
         codigos = list({self.normalizar_codigo(s.get("voucher")) for s in servicios if s.get("voucher")})
 
@@ -106,6 +128,7 @@ class InvoicesValidation:
 
         for s in servicios:
             codigo = self.normalizar_codigo(s.get("voucher", ""))
+            s["vinculado"] = False
 
             encontrado = resultados.get(codigo)
 
@@ -124,11 +147,15 @@ class InvoicesValidation:
                 s["ya_facturado"] = True
                 s["factura"] = facturas[rid]
             else:
-                s["pendiente"] = True
+                s["pending"] = True
+                needs_retry = True
 
             servicios_enriquecidos.append(s)
 
-        if servicios_enriquecidos > 0:
-            self.data_agent["servicios"] = servicios_enriquecidos
+        if len(servicios_enriquecidos) != len(servicios):
+            needs_retry = True
 
-        return self.data_agent
+        self.data_agent["servicios"] = servicios
+
+        print(f"Servicios enriquecidos: {servicios_enriquecidos}")
+        return self.data_agent, needs_retry

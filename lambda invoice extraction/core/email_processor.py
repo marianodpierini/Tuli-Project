@@ -1,5 +1,6 @@
 import json
 import base64
+import re
 
 from pdf2image import convert_from_bytes
 from datetime import datetime
@@ -9,6 +10,8 @@ from database.models import InvoicesExtractedEmails, ServicesExtractedEmails
 from core.invoices_validation import InvoicesValidation
 
 CUIT_AERO = "30707362142"
+MODEL_DEFAULT = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+MODEL_POWERFUL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 
 class EmailProcessor:
@@ -21,6 +24,23 @@ class EmailProcessor:
         self.s3_client = s3_client
         self.db_session = db_session
         self.bedrock_client = bedrock_client
+
+    def safe_json_load(self, text: str):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # 🔥 buscar primer objeto JSON válido
+        matches = re.findall(r"\{.*?\}", text, re.DOTALL)
+
+        for match in matches:
+            try:
+                return json.loads(match)
+            except:
+                continue
+
+        raise ValueError("No se pudo parsear JSON válido")
 
     def normalizar_codigo(self, codigo: str) -> str:
         if codigo.startswith("540"):
@@ -67,10 +87,9 @@ class EmailProcessor:
 
         return imagenes_base64
 
-    def extraer_con_bedrock(self, imagenes_base64):
+    def extraer_con_bedrock(self, imagenes_base64, model_id=MODEL_DEFAULT):
         content = []
 
-        # Agregar imágenes al mensaje
         for img_b64 in imagenes_base64:
             content.append(
                 {
@@ -82,6 +101,39 @@ class EmailProcessor:
                     },
                 }
             )
+
+        prompt_validacion = """
+            Decime si este documento es una FACTURA.
+
+            Responder SOLO:
+
+            {
+            "es_factura": true | false
+            }
+        """
+
+        content.append({"type": "text", "text": prompt_validacion})
+
+        response = self.bedrock_client.invoke_model(
+            modelId=model_id,
+            body=json.dumps(
+                {
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 1500,
+                    "temperature": 0,
+                    "messages": [{"role": "user", "content": content}],
+                }
+            ),
+        )
+
+        response_body = json.loads(response["body"].read())
+        text = response_body["content"][0]["text"]
+
+        text = text.replace("```json", "").replace("```", "").strip()
+
+        if text is False:
+            print(f"Documento no es una factura, se ignora archivo")
+            return None
 
         prompt = """
             Analizá esta factura.
@@ -108,7 +160,7 @@ class EmailProcessor:
         content.append({"type": "text", "text": prompt})
 
         response = self.bedrock_client.invoke_model(
-            modelId="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            modelId=model_id,
             body=json.dumps(
                 {
                     "anthropic_version": "bedrock-2023-05-31",
@@ -124,12 +176,12 @@ class EmailProcessor:
 
         text = text.replace("```json", "").replace("```", "").strip()
 
-        return json.loads(text)
+        return self.safe_json_load(text)
 
-    def extraer_datos_de_pdf(self, file_bytes):
+    def extraer_datos_de_pdf(self, file_bytes, model_id=MODEL_DEFAULT):
         imagenes_base64 = self.pdf_a_imagenes_base64(file_bytes)
 
-        data_agent = self.extraer_con_bedrock(imagenes_base64)
+        data_agent = self.extraer_con_bedrock(imagenes_base64, model_id=model_id)
 
         return data_agent
 
@@ -155,6 +207,9 @@ class EmailProcessor:
             cuit = None
 
             data_agent = self.extraer_datos_de_pdf(file_bytes)
+            if data_agent is None:
+                continue
+            
             cuit = data_agent.get("cuit")
 
             if not cuit:
@@ -169,8 +224,16 @@ class EmailProcessor:
 
             operadores_ids = [op["id"] for op in operadores]
 
-            invoice_validator = InvoicesValidation(data_agent, operadores_ids)
-            data_agent = invoice_validator.vincular_servicios()
+            invoice_validator = InvoicesValidation(data_agent, operadores)
+            data_agent, needs_retry = invoice_validator.vincular_servicios()
+
+            if needs_retry:
+                print(f"Iniciando reintento con agente potente ({MODEL_POWERFUL}) para {filename}")
+                data_agent_retry = self.extraer_datos_de_pdf(file_bytes, model_id=MODEL_POWERFUL)
+                
+                if data_agent_retry:
+                    invoice_validator = InvoicesValidation(data_agent_retry, operadores)
+                    data_agent, _ = invoice_validator.vincular_servicios()
 
             now = datetime.now()
             dest_key = self.generate_s3_key(filename, now)
@@ -203,6 +266,13 @@ class EmailProcessor:
                     codigo=self.normalizar_codigo(servicio.get("voucher")),
                     pasajero=servicio.get("nombre_del_viajero"),
                     importe=servicio.get("importe"),
+                    vinculado=servicio.get("vinculado"),
+                    id_servicio=servicio.get("service_id"),
+                    id_reserva=servicio.get("reserve_id"),
+                    importe_usd=servicio.get("importeUSD"),
+                    ya_facturado=servicio.get("ya_facturado"),
+                    factura=servicio.get("factura"),
+                    pending=servicio.get("pending"),
                 )
                 services.append(service)
 
