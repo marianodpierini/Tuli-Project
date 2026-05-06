@@ -2,6 +2,7 @@ import re
 from parser_helpers.parser_functions import PARSERS_DICT
 
 class InvoicesValidation:
+    """Validates and enriches extracted invoice data by linking services and checking for existing invoices."""
     def __init__(self, data_agent, operadores, conn_mysql):
         self.data_agent = data_agent
         self.operadores = operadores
@@ -10,6 +11,7 @@ class InvoicesValidation:
 
     def normalizar_codigo(self, codigo: str) -> str:
         if not codigo:
+            print("Código vacío, retornando sin normalizar.")
             return codigo
 
         transformations = self.operadores[0].get("codigo_config", {}).get("transformations", [])
@@ -28,6 +30,7 @@ class InvoicesValidation:
         return codigo
 
     def buscar_servicios(self, codigos):
+        """Searches for services in the database based on confirmation codes and operator IDs."""
         try:
             print(f"Buscando servicios para códigos: {codigos} y operadores: {self.operator_ids}")
             with self.conn_mysql.cursor() as cursor:
@@ -73,6 +76,7 @@ class InvoicesValidation:
 
         except Exception as e:
             print(f"Error al buscar servicios: {e}")
+            return {}
 
     def verificar_facturas(self, reserve_ids):
         print(f"Verificando facturas para reservas: {reserve_ids}")
@@ -94,11 +98,12 @@ class InvoicesValidation:
                     result[row["reserve_id"]] = row["factura"]
 
                 
-                print(f"Facturas encontradas: {result}")
+                print(f"Facturas encontradas para reservas: {result}")
                 return result
 
         except Exception as e:
             print(f"Error al verificar facturas: {e}")
+            return {}
 
     def vincular_servicios(self):
         servicios = self.data_agent.get("servicios", [])
@@ -108,7 +113,6 @@ class InvoicesValidation:
 
         if not codigos:
             return self.data_agent, needs_retry
-
         resultados = self.buscar_servicios(codigos)
 
         if not resultados:
@@ -116,11 +120,9 @@ class InvoicesValidation:
 
 
         reserve_ids = list(
-            {
                 r.get("reserve_id") or r.get("aptour_reserve_id")
                 for r in resultados.values()
                 if r
-            }
         )
 
         facturas = self.verificar_facturas(reserve_ids) if reserve_ids else {}
@@ -128,11 +130,10 @@ class InvoicesValidation:
         servicios_enriquecidos = []
 
         for s in servicios:
-            codigo = self.normalizar_codigo(s.get("voucher", ""))
+            original_voucher = s.get("voucher", "")
+            codigo = self.normalizar_codigo(original_voucher)
             s["vinculado"] = False
-
             encontrado = resultados.get(codigo)
-
             if not encontrado:
                 s["vinculado"] = False
                 continue
@@ -155,7 +156,7 @@ class InvoicesValidation:
 
         if len(servicios_enriquecidos) != len(servicios):
             needs_retry = True
-
+        
         self.data_agent["servicios"] = servicios
 
         print(f"Servicios enriquecidos: {servicios_enriquecidos}")
