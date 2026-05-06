@@ -1,12 +1,12 @@
 import re
-from database.db_mysql import get_connection
 from parser_helpers.parser_functions import PARSERS_DICT
 
 class InvoicesValidation:
-    def __init__(self, data_agent, operadores):
+    def __init__(self, data_agent, operadores, conn_mysql):
         self.data_agent = data_agent
         self.operadores = operadores
         self.operator_ids = [op["id"] for op in operadores]
+        self.conn_mysql = conn_mysql
 
     def normalizar_codigo(self, codigo: str) -> str:
         if not codigo:
@@ -28,14 +28,12 @@ class InvoicesValidation:
         return codigo
 
     def buscar_servicios(self, codigos):
-        conn_mysql = get_connection()
         try:
             print(f"Buscando servicios para códigos: {codigos} y operadores: {self.operator_ids}")
-            with conn_mysql.cursor() as cursor:
+            with self.conn_mysql.cursor() as cursor:
                 placeholders_op = ",".join(["%s"] * len(self.operator_ids))
-                placeholders_cod = " OR ".join(
-                    ["s.confirmation_code LIKE %s"] * len(codigos)
-                )
+
+                placeholders_cod = ",".join(["%s"] * len(codigos))
 
                 query = f"""
                     SELECT s.id, s.confirmation_code, s.reserve_id, s.aptour_reserve_id,
@@ -45,11 +43,11 @@ class InvoicesValidation:
                     AND s.balance > 0
                     AND s.date_in >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
                     AND s.date_in <= DATE_ADD(NOW(), INTERVAL 6 MONTH)
-                    AND ({placeholders_cod})
+                    AND s.confirmation_code IN ({placeholders_cod})
                     LIMIT 50
                 """
 
-                params = self.operator_ids + [f"%{c}%" for c in codigos]
+                params = self.operator_ids + codigos
 
                 cursor.execute(query, params)
 
@@ -73,14 +71,13 @@ class InvoicesValidation:
                 print(f"Servicios encontrados: {rows}")
                 return indice
 
-        finally:
-            conn_mysql.close()
+        except Exception as e:
+            print(f"Error al buscar servicios: {e}")
 
     def verificar_facturas(self, reserve_ids):
-        conn_mysql = get_connection()
         print(f"Verificando facturas para reservas: {reserve_ids}")
         try:
-            with conn_mysql.cursor() as cursor:
+            with self.conn_mysql.cursor() as cursor:
                 placeholders = ",".join(["%s"] * len(reserve_ids))
 
                 query = f"""
@@ -100,8 +97,8 @@ class InvoicesValidation:
                 print(f"Facturas encontradas: {result}")
                 return result
 
-        finally:
-            conn_mysql.close()
+        except Exception as e:
+            print(f"Error al verificar facturas: {e}")
 
     def vincular_servicios(self):
         servicios = self.data_agent.get("servicios", [])
@@ -110,9 +107,13 @@ class InvoicesValidation:
         codigos = list({self.normalizar_codigo(s.get("voucher")) for s in servicios if s.get("voucher")})
 
         if not codigos:
-            return self.data_agent
+            return self.data_agent, needs_retry
 
         resultados = self.buscar_servicios(codigos)
+
+        if not resultados:
+            return self.data_agent, needs_retry
+
 
         reserve_ids = list(
             {

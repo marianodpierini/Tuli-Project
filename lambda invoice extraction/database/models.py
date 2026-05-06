@@ -9,16 +9,24 @@ from sqlalchemy import (
     Boolean,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql.schema import UniqueConstraint
 
 Base = declarative_base()
 
 
 class InvoicesExtractedEmails(Base):
     __tablename__ = "invoices_extracted_emails"
-    __table_args__ = {"schema": "facturas_bot"}
+    __table_args__ = (
+        UniqueConstraint(
+            "cuit",
+            "s3_key",
+            "numero_factura",
+            name="_invoice_unique_constraint_",
+        ),
+        {"schema": "facturas_bot"},
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     cuit = Column(Text, nullable=False)

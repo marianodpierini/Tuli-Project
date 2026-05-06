@@ -138,7 +138,9 @@ def get_message_ids(service, start_history_id):
         service.users()
         .history()
         .list(
-            userId="me", startHistoryId=start_history_id, historyTypes=["messageAdded"]
+            userId="me",
+            startHistoryId=start_history_id,
+            historyTypes=["messageAdded"]
         )
         .execute()
     )
@@ -149,7 +151,9 @@ def get_message_ids(service, start_history_id):
         for m in h.get("messagesAdded", []):
             ids.append(m["message"]["id"])
 
-    return ids
+    latest_history_id = results.get("historyId")
+
+    return ids, latest_history_id
 
 
 def get_raw_email(service, msg_id):
@@ -191,46 +195,47 @@ def process_pubsub_messages(
         print("Primer ejecución, guardando historyId y saliendo")
         max_history_id = max([msg["data"]["historyId"] for msg in messages])
         save_history_id(max_history_id)
+
+        ack_ids = [m["ack_id"] for m in messages]
+        ack_messages(subscriber, subscription_path, ack_ids)
+
+        return
+    
+    message_ids, latest_history_id = get_message_ids(gmail_service, last_history_id)
+
+    if not message_ids:
+        print("No hay nuevos emails en Gmail history")
+
+        if latest_history_id:
+            save_history_id(str(latest_history_id))
+            print(f"Cursor actualizado sin mensajes: {latest_history_id}")
+
+        ack_ids = [m["ack_id"] for m in messages]
+        ack_messages(subscriber, subscription_path, ack_ids)
         return
 
-    ack_ids = []
-    new_history_ids = []
-
-    for msg in messages:
-        history_id = msg["data"].get("historyId")
-
-        if not history_id:
+    for msg_id in message_ids:
+        if is_message_processed(msg_id):
+            print(f"Mensaje ya procesado: {msg_id}")
             continue
 
-        print(f"Procesando historyId: {history_id}")
+        raw_email = get_raw_email(gmail_service, msg_id)
 
-        message_ids = get_message_ids(gmail_service, last_history_id)
+        parsed_msg = BytesParser(policy=policy.default).parsebytes(raw_email)
 
-        for msg_id in message_ids:
-            if is_message_processed(msg_id):
-                print(f"Mensaje ya procesado: {msg_id}")
-                continue
+        email_processor = EmailProcessor(
+            parsed_msg, operadores, DEST_BUCKET, s3, SessionLocal, bedrock, msg_id
+        )
 
-            raw_email = get_raw_email(gmail_service, msg_id)
+        email_processor.process_email()
 
-            parsed_msg = BytesParser(policy=policy.default).parsebytes(raw_email)
+        mark_message_processed(msg_id)
 
-            email_processor = EmailProcessor(
-                parsed_msg, operadores, DEST_BUCKET, s3, SessionLocal, bedrock
-            )
+    if latest_history_id:
+        save_history_id(str(latest_history_id))
+        print(f"Nuevo historyId guardado (real): {latest_history_id}")
 
-            email_processor.process_email()
-
-            mark_message_processed(msg_id)
-
-        new_history_ids.append(int(history_id))
-        ack_ids.append(msg["ack_id"])
-
-    if new_history_ids:
-        max_history_id = str(max(new_history_ids))
-        save_history_id(max_history_id)
-        print(f"Nuevo historyId guardado: {max_history_id}")
-
+    ack_ids = [m["ack_id"] for m in messages]
     ack_messages(subscriber, subscription_path, ack_ids)
 
 

@@ -8,15 +8,17 @@ from io import BytesIO
 
 from database.models import InvoicesExtractedEmails, ServicesExtractedEmails
 from core.invoices_validation import InvoicesValidation
+from database.db_mysql import get_connection
 
-CUIT_AERO = "30707362142"
 MODEL_DEFAULT = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 MODEL_POWERFUL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+conn_mysql = get_connection()
 
 
 class EmailProcessor:
     def __init__(
-        self, msg, operadores, s3_bucket_destino, s3_client, db_session, bedrock_client
+        self, msg, operadores, s3_bucket_destino, s3_client, db_session, bedrock_client, msg_id,
     ):
         self.msg = msg
         self.operadores = operadores
@@ -24,6 +26,7 @@ class EmailProcessor:
         self.s3_client = s3_client
         self.db_session = db_session
         self.bedrock_client = bedrock_client
+        self.msg_id = msg_id
 
     def safe_json_load(self, text: str):
         try:
@@ -31,7 +34,6 @@ class EmailProcessor:
         except json.JSONDecodeError:
             pass
 
-        # 🔥 buscar primer objeto JSON válido
         matches = re.findall(r"\{.*?\}", text, re.DOTALL)
 
         for match in matches:
@@ -53,7 +55,7 @@ class EmailProcessor:
             f"Año={now.year}/"
             f"Mes={now.month:02d}/"
             f"Dia={now.day:02d}/"
-            f"{filename}"
+            f"{filename}-{self.msg_id}"
         )
 
     def is_valid_invoice(self, content_type, filename):
@@ -224,7 +226,7 @@ class EmailProcessor:
 
             operadores_ids = [op["id"] for op in operadores]
 
-            invoice_validator = InvoicesValidation(data_agent, operadores)
+            invoice_validator = InvoicesValidation(data_agent, operadores, conn_mysql)
             data_agent, needs_retry = invoice_validator.vincular_servicios()
 
             if needs_retry:
@@ -232,7 +234,7 @@ class EmailProcessor:
                 data_agent_retry = self.extraer_datos_de_pdf(file_bytes, model_id=MODEL_POWERFUL)
                 
                 if data_agent_retry:
-                    invoice_validator = InvoicesValidation(data_agent_retry, operadores)
+                    invoice_validator = InvoicesValidation(data_agent_retry, operadores, conn_mysql)
                     data_agent, _ = invoice_validator.vincular_servicios()
 
             now = datetime.now()
