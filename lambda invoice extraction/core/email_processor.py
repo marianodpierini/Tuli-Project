@@ -1,20 +1,42 @@
 import json
 import base64
 import re
+import hashlib
 from typing import Dict, Any, List, Optional
+from enum import Enum
 
 from pdf2image import convert_from_bytes
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 
-from database.models import InvoicesExtractedEmails, ServicesExtractedEmails
+from database.models import InvoicesExtractedEmails, ServicesExtractedEmails, IncomingEmails, InvoiceCases, InvoiceTransitions
 from core.invoices_validation import InvoicesValidation
 from database.db_mysql import get_connection
 
+from sqlalchemy.exc import IntegrityError
 MODEL_DEFAULT = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 MODEL_POWERFUL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 conn_mysql = get_connection()
+
+
+class EmailsState(str, Enum):
+    RECIBIDO = "RECIBIDO"
+    SIN_ADJUNTO = "SIN ADJUNTO"
+    ADJUNTOS_INVALIDOS = "ADJUNTO INVALIDO"
+    PROCESADO = "PROCESADO"
+    ERROR = "ERROR"
+
+class FacturasState(str, Enum):
+    RECIBIDO = "RECIBIDO"
+    LISTO_PARA_CARGAR = "LISTO PARA CARGAR"
+    LOADED_BY_IT = "LOADED BY IT"
+    LOAD_FAILED = "LOAD FAILED"
+    DUPLICADO = "DUPLICADO"
+    DESCARTADO = "DESCARTADO"
+    EN_REVISION = "EN REVISION"
+    RECHAZADA = "RECHAZADA"
+    ERROR = "ERROR"
 
 
 class JsonParser:
@@ -96,7 +118,7 @@ class PdfBedrockExtractor:
         extraction_prompt = """
             Analizá esta factura.
             Extraé:
-            - cuit (del proveedor, NO de Aero)
+            - cuit (del proveedor, excluir cuit AERO 30-70736214-2)
             - numero_factura
             - fecha (YYYY-MM-DD)
             - moneda
@@ -132,7 +154,7 @@ class S3AttachmentManager:
             f"Año={now.year}/"
             f"Mes={now.month:02d}/"
             f"Dia={now.day:02d}/"
-            f"{filename}-{self.msg_id}"
+            f"{self.msg_id}-{filename}"
         )
 
     def is_valid_invoice_attachment(self, content_type: str, filename: str) -> bool:
@@ -163,6 +185,7 @@ class EmailProcessor:
         self.operadores = operadores
         self.db_session = db_session
         self.msg_id = msg_id
+        self.email_id = None
         self.json_parser = JsonParser()
         self.pdf_extractor = PdfBedrockExtractor(bedrock_client, self.json_parser)
         self.s3_manager = S3AttachmentManager(s3_client, s3_bucket_destino, msg_id)
@@ -179,11 +202,39 @@ class EmailProcessor:
             if cuit_limpio == cuit.replace("-", ""):
                 return operadores
         return None
+    
 
+    def insert_email(self):
+        """Inserta el registro inicial del correo en la tabla incoming_emails."""
+        attachments = list(self.msg.iter_attachments())
+        attachment_count = len(attachments)
+        
+        state = EmailsState.RECIBIDO
+        reason = None
+        if attachment_count == 0:
+            state = EmailsState.SIN_ADJUNTO
+            reason = "El correo no contiene archivos adjuntos."
+
+        email_record = IncomingEmails(
+            message_id=self.msg_id,
+            received_at=datetime.now(timezone.utc),
+            sender=str(self.msg.get("From", "Desconocido")),
+            subject=str(self.msg.get("Subject", "Sin Asunto")),
+            has_attachments=attachment_count > 0,
+            attachment_count=attachment_count,
+            processing_state=state,
+            processing_reason=reason
+        )
+        self.email_id = email_record.email_id
+        with self.db_session() as session:
+            session.add(email_record)
+            session.commit()
 
     def process_email(self):
-        attachments_saved = []
-        data_to_insert = []
+        self.insert_email()
+        
+        attachments_data_for_db = []
+        
         for part in self.msg.iter_attachments():
             filename = part.get_filename()
             if not filename:
@@ -193,18 +244,20 @@ class EmailProcessor:
             print(f"Encontrado adjunto: {filename} ({content_type})")
 
             if not self.s3_manager.is_valid_invoice_attachment(content_type, filename):
-                print(f"Archivo ignorado: {filename}")
+                print(f"Archivo ignorado por tipo/extensión inválida: {filename}")
                 continue
 
             file_bytes = part.get_payload(decode=True)
+            attachment_hash = hashlib.sha256(file_bytes).hexdigest()
 
             data_agent = self.pdf_extractor.extract_invoice_data(file_bytes)
             if data_agent is None:
+                print(f"No se pudo extraer datos de la factura para {filename}, se ignora.")
                 continue
             
             cuit = data_agent.get("cuit")
             if not cuit:
-                print("No se pudo extraer CUIT, se ignora archivo")
+                print(f"No se pudo extraer CUIT para {filename}, se ignora archivo.")
                 continue
 
             operadores = self._buscar_operador_por_cuit(cuit)
@@ -213,6 +266,16 @@ class EmailProcessor:
                 continue
 
             operadores_ids = [op["id"] for op in operadores]
+
+            invoice_case = InvoiceCases(
+                email_id=self.email_id,
+                attachment_hash=attachment_hash,
+                attachment_name=filename,
+                operator_cuit=cuit,
+                operator_id=operadores_ids[0] if operadores_ids else None,
+                state=FacturasState.RECIBIDO,
+                extraction_method="Bedrock"
+            )
 
             invoice_validator = InvoicesValidation(data_agent, operadores, conn_mysql)
             data_agent, needs_retry = invoice_validator.vincular_servicios()
@@ -223,11 +286,29 @@ class EmailProcessor:
                 
                 if data_agent_retry:
                     invoice_validator = InvoicesValidation(data_agent_retry, operadores, conn_mysql)
-                    data_agent, _ = invoice_validator.vincular_servicios()
+                    data_agent, needs_retry = invoice_validator.vincular_servicios()
+
+            old_state = invoice_case.state
+            state_invoice = (
+                FacturasState.EN_REVISION
+                if any(not s.get("vinculado") for s in data_agent.get("servicios", []))
+                else FacturasState.LISTO_PARA_CARGAR
+            )
+
+            invoice_case.state = state_invoice
+
+            invoice_transition_validation = InvoiceTransitions(
+                case=invoice_case,
+                from_state=old_state,
+                to_state=state_invoice,
+                reason="Validación de servicios y vinculación.",
+                metadata_={"numero_factura": data_agent.get("numero_factura")},
+                actor="System/Validator"
+            )
 
             dest_key = self.s3_manager.upload_attachment(filename, file_bytes, content_type)
 
-            invoice = InvoicesExtractedEmails(
+            invoice_extracted = InvoicesExtractedEmails(
                 cuit=cuit,
                 ids_operadores=operadores_ids,
                 s3_key=dest_key,
@@ -256,13 +337,95 @@ class EmailProcessor:
                 )
                 services.append(service)
 
-            invoice.services = services
-            data_to_insert.append(invoice)
+            invoice_extracted.services = services
+            
+            attachments_data_for_db.append({
+                "filename": filename,
+                "s3_key": dest_key,
+                "objects": [
+                    invoice_case,
+                    invoice_transition_validation,
+                    invoice_extracted,
+                    *services
+                ]
+            })
 
-            attachments_saved.append({"filename": filename, "s3_key": dest_key})
+        successful_attachments = []
+        failed_attachments = []
 
         with self.db_session() as session:
-            session.add_all(data_to_insert)
+            for attachment_data in attachments_data_for_db:
+                filename = attachment_data["filename"]
+                s3_key = attachment_data["s3_key"]
+                objects_to_add = attachment_data["objects"]
+                
+                try:
+                    session.add_all(objects_to_add)
+                    session.flush()
+                    session.commit()
+                    successful_attachments.append({"filename": filename, "s3_key": s3_key})
+                    print(f"Factura {filename} procesada y guardada exitosamente.")
+                except IntegrityError as e:
+                    session.rollback()
+                    print(f"Error de integridad al guardar factura {filename}: {e}")
+                    
+                    current_invoice_case = next((obj for obj in objects_to_add if isinstance(obj, InvoiceCases)), None)
+                    current_invoice_extracted = next((obj for obj in objects_to_add if isinstance(obj, InvoicesExtractedEmails)), None)
+
+                    current_services = [obj for obj in objects_to_add if isinstance(obj, ServicesExtractedEmails)]
+                    current_validation_transition = next((obj for obj in objects_to_add if isinstance(obj, InvoiceTransitions) and obj.from_state is not None), None)
+
+                    if current_invoice_case and current_invoice_extracted:
+                        existing_invoice_case_in_db = session.query(InvoiceCases).filter_by(
+                            email_id=current_invoice_case.email_id,
+                            attachment_hash=current_invoice_case.attachment_hash
+                        ).first()
+                        
+                        if existing_invoice_case_in_db:
+                            print(f"Factura {filename} (hash: {current_invoice_case.attachment_hash}) ya existe. Marcando *nueva* factura como DUPLICADO.")
+                            
+                            original_intended_state = current_invoice_case.state
+                            current_invoice_case.state = FacturasState.DUPLICADO
+                            
+                            duplicate_transition = InvoiceTransitions(
+                                case=current_invoice_case,
+                                from_state=original_intended_state,
+                                to_state=FacturasState.DUPLICADO,
+                                reason=f"Factura duplicada detectada (hash: {current_invoice_case.attachment_hash}).",
+                                metadata_={"numero_factura": current_invoice_extracted.numero_factura if current_invoice_extracted else "N/A"},
+                                actor="System/Extractor"
+                            )
+                            try:
+                                session.add(current_invoice_case)
+                                session.add(current_invoice_extracted)
+                                session.add_all(current_services)
+                                session.add(current_validation_transition)
+                                session.add(duplicate_transition)
+                                session.commit()
+                                successful_attachments.append({"filename": filename, "s3_key": s3_key, "status": "DUPLICADO"})
+                                print(f"Nueva factura {filename} marcada como DUPLICADO y guardada.")
+                            except Exception as update_e:
+                                session.rollback()
+                                print(f"Error al guardar la nueva factura {filename} como DUPLICADO y su transición: {update_e}")
+                                failed_attachments.append({"filename": filename, "reason": "ERROR_DUPLICADO_SAVE"})
+                        else:
+                            print(f"Error de integridad no relacionado con duplicado de InvoiceCase para {filename}: {e}")
+                            failed_attachments.append({"filename": filename, "reason": "ERROR_INTEGRIDAD"})
+                except Exception as e:
+                    session.rollback()
+                    print(f"Error inesperado al guardar factura {filename}: {e}")
+                    failed_attachments.append({"filename": filename, "reason": "ERROR_INESPERADO"})
+
+            final_state = EmailsState.PROCESADO
+            if not successful_attachments and not failed_attachments:
+                final_state = EmailsState.ADJUNTOS_INVALIDOS
+            elif not successful_attachments and failed_attachments:
+                final_state = EmailsState.ERROR
+
+            session.query(IncomingEmails).filter(IncomingEmails.message_id == self.msg_id).update({
+                IncomingEmails.processing_state: final_state
+            })
+            
             session.commit()
 
-        return attachments_saved
+        return successful_attachments

@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy import (
     Column,
     Text,
@@ -7,9 +9,11 @@ from sqlalchemy import (
     Numeric,
     ForeignKey,
     Boolean,
+    TIMESTAMP,
+    JSON,
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql.schema import UniqueConstraint
 
@@ -68,3 +72,69 @@ class ServicesExtractedEmails(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     invoice = relationship("InvoicesExtractedEmails", back_populates="services")
+
+
+class IncomingEmails(Base):
+    __tablename__ = "incoming_emails"
+    __table_args__ = {"schema": "facturas_bot"}
+    email_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    message_id = Column(Text, unique=True)
+    received_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    sender = Column(Text)
+    subject = Column(Text)
+    has_attachments = Column(Boolean, default=False)
+    attachment_count = Column(Integer, default=0)
+    s3_key = Column(Text)
+    processing_state = Column(Text, nullable=False)
+    processing_reason = Column(Text)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    cases = relationship("InvoiceCases", back_populates="email")
+
+
+class InvoiceCases(Base):
+    __tablename__ = "invoice_cases"
+    __table_args__ = (
+        UniqueConstraint("attachment_hash"),
+        {"schema": "facturas_bot"},
+    )
+    case_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email_id = Column(
+        UUID(as_uuid=True), ForeignKey("facturas_bot.incoming_emails.email_id")
+    )
+    attachment_hash = Column(Text, nullable=False)
+    attachment_name = Column(Text)
+    operator_cuit = Column(Text)
+    operator_id = Column(Integer)
+    state = Column(Text, nullable=False)
+    state_reason = Column(Text)
+    extraction_method = Column(Text)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    email = relationship("IncomingEmails", back_populates="cases")
+    transitions = relationship("InvoiceTransitions", back_populates="case")
+
+
+class InvoiceTransitions(Base):
+    __tablename__ = "invoice_transitions"
+    __table_args__ = {"schema": "facturas_bot"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    case_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("facturas_bot.invoice_cases.case_id"),
+        nullable=False,
+    )
+    from_state = Column(Text)
+    to_state = Column(Text, nullable=False)
+    reason = Column(Text)
+    actor = Column(Text)
+    metadata_ = Column("metadata", JSON)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    case = relationship("InvoiceCases", back_populates="transitions")
