@@ -2,7 +2,8 @@ import json
 import base64
 import re
 import hashlib
-from typing import Dict, Any, List, Optional
+import time
+from typing import Dict, Any, List, Optional, Tuple
 from enum import Enum
 
 from pdf2image import convert_from_bytes
@@ -26,6 +27,7 @@ class EmailsState(str, Enum):
     ADJUNTOS_INVALIDOS = "ADJUNTO INVALIDO"
     PROCESADO = "PROCESADO"
     ERROR = "ERROR"
+    SIN_OPERADOR_ASOCIADO = "SIN OPERADOR ASOCIADO"
 
 class FacturasState(str, Enum):
     RECIBIDO = "RECIBIDO"
@@ -72,7 +74,7 @@ class PdfBedrockExtractor:
             base64_images.append(base64.b64encode(buffer.getvalue()).decode("utf-8"))
         return base64_images
 
-    def _invoke_bedrock_model(self, content: List[Dict[str, Any]], model_id: str) -> Dict[str, Any]:
+    def _invoke_bedrock_model(self, content: List[Dict[str, Any]], model_id: str) -> Tuple[str, int]:
         """Invokes the Bedrock model with the given content and model ID."""
         response = self.bedrock_client.invoke_model(
             modelId=model_id,
@@ -87,17 +89,21 @@ class PdfBedrockExtractor:
         )
         response_body = json.loads(response["body"].read())
         text = response_body["content"][0]["text"]
-        return text.replace("```json", "").replace("```", "").strip()
+        usage = response_body.get("usage", {})
+        tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        cleaned_text = text.replace("```json", "").replace("```", "").strip()
+        return cleaned_text, tokens
 
-    def extract_invoice_data(self, file_bytes: bytes, model_id: str = MODEL_DEFAULT) -> Optional[Dict[str, Any]]:
+    def extract_invoice_data(self, file_bytes: bytes, model_id: str = MODEL_DEFAULT) -> Tuple[Optional[Dict[str, Any]], int]:
         """
         Extracts invoice data from PDF bytes using Bedrock.
         Performs a two-step process: validation (is it an invoice?) and then data extraction.
         """
+        total_tokens = 0
         images_base64 = self._pdf_to_base64_images(file_bytes)
         if not images_base64:
             print("No images extracted from PDF.")
-            return None
+            return None, 0
 
         validation_prompt = """
             Decime si este documento es una FACTURA.
@@ -108,12 +114,13 @@ class PdfBedrockExtractor:
         """
         validation_content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}} for img_b64 in images_base64]
         validation_content.append({"type": "text", "text": validation_prompt})
-        validation_response_text = self._invoke_bedrock_model(validation_content, model_id)
+        validation_response_text, tokens_val = self._invoke_bedrock_model(validation_content, model_id)
+        total_tokens += tokens_val
         validation_data = self.json_parser.safe_json_load(validation_response_text)
 
         if not validation_data or not validation_data.get("es_factura"):
             print(f"Documento no es una factura, se ignora archivo. Validation response: {validation_response_text}")
-            return None
+            return None, total_tokens
 
         extraction_prompt = """
             Analizá esta factura.
@@ -136,8 +143,9 @@ class PdfBedrockExtractor:
         """
         extraction_content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}} for img_b64 in images_base64]
         extraction_content.append({"type": "text", "text": extraction_prompt})
-        extraction_response_text = self._invoke_bedrock_model(extraction_content, model_id)
-        return self.json_parser.safe_json_load(extraction_response_text)
+        extraction_response_text, tokens_ext = self._invoke_bedrock_model(extraction_content, model_id)
+        total_tokens += tokens_ext
+        return self.json_parser.safe_json_load(extraction_response_text), total_tokens
 
 
 class S3AttachmentManager:
@@ -151,9 +159,7 @@ class S3AttachmentManager:
         """Generates a unique S3 key for the attachment."""
         return (
             f"facturas/"
-            f"Año={now.year}/"
-            f"Mes={now.month:02d}/"
-            f"Dia={now.day:02d}/"
+            f"fecha={now.year}-{now.month:02d}-{now.day:02d}/"
             f"{self.msg_id}-{filename}"
         )
 
@@ -197,10 +203,23 @@ class EmailProcessor:
 
     def _buscar_operador_por_cuit(self, cuit: str) -> Optional[List[Dict[str, Any]]]:
         """Busca operadores por CUIT."""
-        for cuit_ops, operadores in self.operadores.items():
+        for cuit_ops, operadores in self.operadores["operadores_by_cuit"].items():
             cuit_limpio = cuit_ops.replace("-", "")
             if cuit_limpio == cuit.replace("-", ""):
                 return operadores
+        return None
+    
+    def _buscar_operador_por_sender(self, sender: str) -> Optional[str]:
+        """Busca operadores por dirección de correo del remitente."""
+        cuit = self.operadores.get("cuit_by_sender", {}).get(sender)
+        if cuit:
+            print(f"CUIT {cuit} encontrado para sender {sender}")
+            operadores = self._buscar_operador_por_cuit(cuit)
+            if operadores:
+                return operadores
+            print(f"CUIT {cuit} encontrado para sender {sender}, pero no se encontraron operadores asociados.")
+            return "-1"
+        print(f"No se encontró CUIT para sender {sender}, se buscara por contenido de la factura.")
         return None
     
 
@@ -208,9 +227,17 @@ class EmailProcessor:
         """Inserta el registro inicial del correo en la tabla incoming_emails."""
         attachments = list(self.msg.iter_attachments())
         attachment_count = len(attachments)
+        sender = str(self.msg.get("From", "Desconocido"))
         
         state = EmailsState.RECIBIDO
         reason = None
+
+        data_by_sender = self._buscar_operador_por_sender(sender)
+
+        if data_by_sender == "-1":
+            state = EmailsState.SIN_OPERADOR_ASOCIADO
+            reason = f"El remitente {sender} está asociado a un CUIT sin operadores válidos."
+
         if attachment_count == 0:
             state = EmailsState.SIN_ADJUNTO
             reason = "El correo no contiene archivos adjuntos."
@@ -218,7 +245,7 @@ class EmailProcessor:
         email_record = IncomingEmails(
             message_id=self.msg_id,
             received_at=datetime.now(timezone.utc),
-            sender=str(self.msg.get("From", "Desconocido")),
+            sender=sender,
             subject=str(self.msg.get("Subject", "Sin Asunto")),
             has_attachments=attachment_count > 0,
             attachment_count=attachment_count,
@@ -230,8 +257,16 @@ class EmailProcessor:
             session.add(email_record)
             session.commit()
 
+        return data_by_sender
+
     def process_email(self):
-        self.insert_email()
+        start_time = time.perf_counter()
+        total_tokens_email = 0
+
+        data_by_sender = self.insert_email()
+
+        if data_by_sender == "-1":
+            return 0, 0
         
         attachments_data_for_db = []
         
@@ -250,7 +285,8 @@ class EmailProcessor:
             file_bytes = part.get_payload(decode=True)
             attachment_hash = hashlib.sha256(file_bytes).hexdigest()
 
-            data_agent = self.pdf_extractor.extract_invoice_data(file_bytes)
+            data_agent, tokens = self.pdf_extractor.extract_invoice_data(file_bytes)
+            total_tokens_email += tokens
             if data_agent is None:
                 print(f"No se pudo extraer datos de la factura para {filename}, se ignora.")
                 continue
@@ -282,7 +318,8 @@ class EmailProcessor:
 
             if needs_retry:
                 print(f"Iniciando reintento con agente potente ({MODEL_POWERFUL}) para {filename}")
-                data_agent_retry = self.pdf_extractor.extract_invoice_data(file_bytes, model_id=MODEL_POWERFUL)
+                data_agent_retry, tokens_retry = self.pdf_extractor.extract_invoice_data(file_bytes, model_id=MODEL_POWERFUL)
+                total_tokens_email += tokens_retry
                 
                 if data_agent_retry:
                     invoice_validator = InvoicesValidation(data_agent_retry, operadores, conn_mysql)
@@ -422,10 +459,15 @@ class EmailProcessor:
             elif not successful_attachments and failed_attachments:
                 final_state = EmailsState.ERROR
 
+            processing_time_ms = int((time.perf_counter() - start_time) * 1000)
+            print(f"Procesamiento finalizado para {self.msg_id}. Tiempo: {processing_time_ms}ms, Tokens: {total_tokens_email}")
+
             session.query(IncomingEmails).filter(IncomingEmails.message_id == self.msg_id).update({
-                IncomingEmails.processing_state: final_state
+                IncomingEmails.processing_state: final_state,
+                IncomingEmails.total_tokens: total_tokens_email,
+                IncomingEmails.processing_time_ms: processing_time_ms
             })
             
             session.commit()
 
-        return successful_attachments
+        return processing_time_ms, total_tokens_email

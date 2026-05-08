@@ -61,9 +61,9 @@ class GmailStateRepository:
         )
         return "Item" in response
 
-    def mark_message_processed(self, message_id: str):
+    def mark_message_processed(self, message_id: str, state: str, total_time_ms: int = 0, total_tokens: int = 0):
         self.dynamodb_client.put_item(
-            TableName=self.table_name_processed, Item={"message_id": {"S": message_id}}
+            TableName=self.table_name_processed, Item={"message_id": {"S": message_id}, "state": {"S": state}, "total_time_ms": {"N": str(total_time_ms)}, "total_tokens": {"N": str(total_tokens)}}
         )
         print(f"Mensaje marcado como procesado: {message_id}")
 
@@ -196,6 +196,8 @@ class InvoiceExtractionOrchestrator:
                 print(f"Mensaje ya procesado: {msg_id}")
                 continue
 
+            self.state_repo.mark_message_processed(msg_id, "in progress")
+
             try:
                 raw_email = self.gmail_service.get_raw_email(msg_id)
                 parsed_msg = BytesParser(policy=policy.default).parsebytes(raw_email)
@@ -203,8 +205,9 @@ class InvoiceExtractionOrchestrator:
                 email_processor = EmailProcessor(
                     parsed_msg, operadores, DEST_BUCKET, self.s3_client, self.db_session_factory, self.bedrock_client, msg_id
                 )
-                email_processor.process_email()
-                self.state_repo.mark_message_processed(msg_id)
+                total_time_email, total_tokens_email = email_processor.process_email()
+
+                self.state_repo.mark_message_processed(msg_id, "completed", total_time_email, total_tokens_email)
             except Exception as e:
                 print(f"Error processing message {msg_id}: {e}")
 
