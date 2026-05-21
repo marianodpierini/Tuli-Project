@@ -252,7 +252,7 @@ class EmailProcessor:
             processing_state=state,
             processing_reason=reason
         )
-        self.email_id = email_record.email_id
+        self.email_id = email_record
         with self.db_session() as session:
             session.add(email_record)
             session.commit()
@@ -304,7 +304,7 @@ class EmailProcessor:
             operadores_ids = [op["id"] for op in operadores]
 
             invoice_case = InvoiceCases(
-                email_id=self.email_id,
+                email=self.email_id,
                 attachment_hash=attachment_hash,
                 attachment_name=filename,
                 operator_cuit=cuit,
@@ -463,9 +463,7 @@ class EmailProcessor:
             print(f"Procesamiento finalizado para {self.msg_id}. Tiempo: {processing_time_ms}ms, Tokens: {total_tokens_email}")
 
             session.query(IncomingEmails).filter(IncomingEmails.message_id == self.msg_id).update({
-                IncomingEmails.processing_state: final_state,
-                IncomingEmails.total_tokens: total_tokens_email,
-                IncomingEmails.processing_time_ms: processing_time_ms
+                IncomingEmails.processing_state: final_state
             })
             
             session.commit()
