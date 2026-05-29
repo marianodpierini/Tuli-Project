@@ -2,21 +2,48 @@ import json
 import traceback
 import uuid
 import time as pytime
+import botocore
 
 from datetime import datetime
-from functools import lru_cache
 
 from sqlalchemy.inspection import inspect
 from sqlalchemy import inspect, extract, select, func, update, text
 
 from core.improved_context_classes import EnhancedUserContext, CustomJSONEncoder
 from core.database.db import SessionLocal, engine
-from core.database.models import ServiciosTcktsRvas, SuggestedQuestions
+from core.database.models import (
+    ServiciosTcktsRvas,
+    SuggestedQuestions,
+    TableMetadata,
+    ColumnMetadata,
+    Glossary,
+    BusinessRules,
+)
+
+from core.helpers.helpers import (
+    cohere_embed,
+)
+
 
 from core.request_handler import RequestHandler
 
-
 ALLOWED_PROCEDURES = ["objetivos_departamentales"]
+
+STOP_WORDS = {
+    "en",
+    "la",
+    "el",
+    "los",
+    "las",
+    "que",
+    "de",
+    "a",
+    "y",
+    "o",
+    "un",
+    "una",
+    "?",
+}
 
 
 class BedrockRequestHandler(RequestHandler):
@@ -32,6 +59,7 @@ class BedrockRequestHandler(RequestHandler):
             "/diagnostico": self.handle_diagnostico,
             "/diagnostics": self.handle_diagnostics,
             "/stored_procedure": self.handle_stored_procedure,
+            "/discover_tables": self.handle_discover_tables,
         }
 
     def format_response_for_bedrock(
@@ -230,56 +258,166 @@ class BedrockRequestHandler(RequestHandler):
             prompt_session_attributes=self.event.prompt_session_attributes,
         )
 
-    @lru_cache(maxsize=1)
-    def get_schema(self):
+    def get_schema(self, table_names=None):
+        """
+        Obtiene dinámicamente el esquema y metadatos desde el catálogo.
+        """
+        schema_dict = {}
         try:
-            servicios_tckts_rvas_mapper = inspect(ServiciosTcktsRvas)
-            suggested_questions_mapper = inspect(SuggestedQuestions)
+            with SessionLocal() as session:
+                table_sql = select(
+                    TableMetadata.table_name,
+                    TableMetadata.esquema,
+                    TableMetadata.descripcion_negocio,
+                    TableMetadata.granularidad,
+                    TableMetadata.dominio,
+                    TableMetadata.default_time_column,
+                ).filter(TableMetadata.usable_por_turi == True)
+                if table_names:
+                    table_sql = table_sql.filter(
+                        TableMetadata.table_name.in_(table_names)
+                    )
+                    result = session.execute(table_sql)
+                else:
+                    result = session.execute(table_sql)
 
-            schema = {
-                "servicios_tckts_rvas_schema": {
-                    "table_name": ServiciosTcktsRvas.__tablename__,
-                    "columns": {},
-                },
-                "suggested_questions_schema": {
-                    "table_name": SuggestedQuestions.__tablename__,
-                    "columns": {},
-                },
-            }
+                tables = [dict(row._mapping) for row in result]
+                found_table_names = [t["table_name"] for t in tables]
 
-            for column in servicios_tckts_rvas_mapper.columns:
-                schema["servicios_tckts_rvas_schema"]["columns"][column.name] = {
-                    "type": str(column.type),
-                    "nullable": column.nullable,
-                    "default": (
-                        str(column.default.arg) if column.default is not None else None
-                    ),
-                }
+                if table_names:
+                    for requested in table_names:
+                        if requested not in found_table_names:
+                            self.logger.warning(
+                                f"La tabla '{requested}' no existe en table_metadata o usable_por_turi es false."
+                            )
 
-            for column in suggested_questions_mapper.columns:
-                schema["suggested_questions_schema"]["columns"][column.name] = {
-                    "type": str(column.type),
-                    "nullable": column.nullable,
-                    "default": (
-                        str(column.default.arg) if column.default is not None else None
-                    ),
-                }
+                if not tables:
+                    return {}
 
-            return schema
+                col_sql = select(
+                    ColumnMetadata.table_name,
+                    ColumnMetadata.esquema,
+                    ColumnMetadata.column_name,
+                    ColumnMetadata.tipo_dato,
+                    ColumnMetadata.descripcion_negocio,
+                    ColumnMetadata.sinonimos_usuario,
+                    ColumnMetadata.valores_posibles,
+                    ColumnMetadata.ejemplo_filtro,
+                ).filter(
+                    ColumnMetadata.usable_por_turi == True,
+                    ColumnMetadata.table_name.in_(found_table_names),
+                )
+                cols_result = session.execute(col_sql)
+                all_columns = [dict(row._mapping) for row in cols_result]
 
+                domains = list({t["dominio"] for t in tables if t["dominio"]})
+                glossary_by_domain = {}
+                rules_by_domain = {}
+
+                if domains:
+                    gloss_sql = select(
+                        Glossary.termino,
+                        Glossary.dominio,
+                        Glossary.significado,
+                        Glossary.mapeo_tecnico,
+                        Glossary.sinonimos,
+                    ).filter(
+                        Glossary.usable_por_turi == True, Glossary.dominio.in_(domains)
+                    )
+
+                    gloss_result = session.execute(gloss_sql)
+                    for row in gloss_result:
+                        d = row.dominio
+                        if d not in glossary_by_domain:
+                            glossary_by_domain[d] = {}
+                        glossary_by_domain[d][row.termino] = {
+                            "significado": row.significado,
+                            "mapeo_tecnico": row.mapeo_tecnico,
+                            "sinonimos": row.sinonimos,
+                        }
+
+                    rules_sql = select(
+                        BusinessRules.nombre_regla,
+                        BusinessRules.dominio,
+                        BusinessRules.definicion,
+                        BusinessRules.rule_sql,
+                    ).filter(
+                        BusinessRules.estado_metadata == "validado",
+                        BusinessRules.dominio.in_(domains),
+                    )
+
+                    rules_result = session.execute(rules_sql)
+                    for row in rules_result:
+                        d = row.dominio
+                        if d not in rules_by_domain:
+                            rules_by_domain[d] = {}
+                        rules_by_domain[d][row.nombre_regla] = {
+                            "definicion": row.definicion,
+                            "rule_sql": row.rule_sql,
+                        }
+
+                for t in tables:
+                    full_key = f"{t['esquema']}.{t['table_name']}"
+                    dom = t["dominio"]
+                    schema_dict[full_key] = {
+                        "descripcion_negocio": t["descripcion_negocio"],
+                        "granularidad": t["granularidad"],
+                        "dominio": dom,
+                        "default_time_column": t["default_time_column"],
+                        "columns": {
+                            c["column_name"]: {
+                                "tipo_dato": c["tipo_dato"],
+                                "descripcion_negocio": c["descripcion_negocio"],
+                                "sinonimos_usuario": c["sinonimos_usuario"],
+                                "valores_posibles": c["valores_posibles"],
+                                "ejemplo_filtro": c["ejemplo_filtro"],
+                            }
+                            for c in all_columns
+                            if c["table_name"] == t["table_name"]
+                            and c["esquema"] == t["esquema"]
+                        },
+                        "glossary": glossary_by_domain.get(dom, {}),
+                        "business_rules": rules_by_domain.get(dom, {}),
+                    }
+            return schema_dict
         except Exception as e:
-            self.logger.error(f"Error al obtener el esquema: {str(e)}")
+            self.logger.error(
+                f"Error al obtener el esquema desde el catálogo: {str(e)}"
+            )
             raise
 
     def handle_schema(self):
         self.logger.info(f"[{self.event_id}] Procesando solicitud de esquema")
 
+        table_names = None
         try:
-            schema = self.get_schema()
-
-            self.logger.info(
-                f"[{self.event_id}] Esquema obtenido: {json.dumps(schema)}"
+            properties = (
+                self.event.request_body.get("content", {})
+                .get("application/json", {})
+                .get("properties", [])
             )
+            for prop in properties:
+                if prop.get("name") == "table_names":
+                    val = prop.get("value")
+                    if val:
+                        if isinstance(val, str):
+                            try:
+                                table_names = json.loads(val.replace("'", '"'))
+                            except:
+                                table_names = [
+                                    t.strip().strip("'\"[]")
+                                    for t in val.split(",")
+                                    if t.strip()
+                                ]
+                        elif isinstance(val, list):
+                            table_names = val
+        except Exception as e:
+            self.logger.warning(
+                f"Error parseando table_names, se procederá sin filtro: {str(e)}"
+            )
+
+        try:
+            schema = self.get_schema(table_names)
 
             response_data = {"schema": schema}
             total_time = pytime.time() - self.start_time
@@ -532,6 +670,33 @@ class BedrockRequestHandler(RequestHandler):
                 rows = []
 
             return {"results": rows}
+
+    def handle_discover_tables(self):
+        config = botocore.config.Config(
+            connect_timeout=30,
+            read_timeout=120,
+            retries={"max_attempts": 3, "mode": "standard"},
+        )
+
+        properties = (
+            self.event.request_body.get("content", {})
+            .get("application/json", {})
+            .get("properties", [])
+        )
+
+        for prop in properties:
+            if prop.get("name") == "query_intent":
+                input_txt = prop.get("value")
+
+                keywords_cache = [
+                    kw.lower()
+                    for kw in input_txt.split()
+                    if kw.lower() not in STOP_WORDS
+                ]
+
+                val_embeded = cohere_embed(
+                    input_txt, keywords_cache, config, "search_query"
+                )
 
     def handle_event(self):
         """Handler corregido para Action Groups de Bedrock Agent con logging completo"""

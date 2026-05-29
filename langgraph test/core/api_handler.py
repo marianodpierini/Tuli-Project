@@ -308,6 +308,16 @@ class ApiRequestHandler(RequestHandler):
 
             langgraph_manager = LanggraphManager(self.logger, sql_agent, rag_agent)
 
+            config_lggp = {
+                "configurable": {"thread_id": self.user_context.session_id},
+                "metadata": {
+                    "user_id": self.user_context.user_email
+                    or self.user_context.phone_number,
+                    "source": source,
+                    "session_id": self.user_context.session_id,
+                },
+            }
+
             response = langgraph_manager.graph.invoke(
                 {
                     "question": conversation_history,
@@ -316,10 +326,14 @@ class ApiRequestHandler(RequestHandler):
                     "sql_result": None,
                     "rag_result": None,
                     "final_answer": None,
-                }
+                },
+                config=config_lggp,
             )
 
-            self.send_google_chat_message(self.event.body["space_name"], response)
+            self.send_google_chat_message(
+                self.event.body["space_name"],
+                response.get("final_answer", "No se pudo generar una respuesta final."),
+            )
 
             end = time.perf_counter()
 

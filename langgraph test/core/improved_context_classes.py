@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, Optional, TypedDict
 from logging import Logger
+from langsmith import traceable, get_current_run_tree
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -257,60 +258,65 @@ class EnhancedUserContext:
         if total_tokens is not None:
             total = total_tokens
 
-        response = usage_table.get_item(Key={"user_id": user_id})
-        item = response.get("Item")
-        if not item:
-            usage_table.put_item(
-                Item={
-                    "user_id": user_id,
-                    "tokens_usados": total,
-                    "fecha_ultimo_uso": str(date.today()),
-                    "limite_tokens": LIMITE_TOKENS_DIARIO,
-                    "channel": source,
-                }
-            )
-        else:
-            nuevo_total = item["tokens_usados"] + total
+        try:
+            response = usage_table.get_item(Key={"user_id": user_id})
+            item = response.get("Item")
+            if not item:
+                usage_table.put_item(
+                    Item={
+                        "user_id": user_id,
+                        "tokens_usados": total,
+                        "fecha_ultimo_uso": str(date.today()),
+                        "limite_tokens": LIMITE_TOKENS_DIARIO,
+                        "channel": source,
+                    }
+                )
+            else:
+                nuevo_total = item["tokens_usados"] + total
 
-            usage_table.update_item(
-                Key={"user_id": user_id},
-                UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
-                ExpressionAttributeValues={
-                    ":nuevo": nuevo_total,
-                    ":fecha": date.today().isoformat(),
-                },
-            )
+                usage_table.update_item(
+                    Key={"user_id": user_id},
+                    UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
+                    ExpressionAttributeValues={
+                        ":nuevo": nuevo_total,
+                        ":fecha": date.today().isoformat(),
+                    },
+                )
+        except ClientError as e:
+            self.logger.error(f"DynamoDB ClientError in update_use_tokens for user {user_id}: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error in update_use_tokens for user {user_id}: {e}")
 
     def validate_use_tokens(self, source: str):
 
         user_id = self.user_email if source == "google_chat" else self.phone_number
 
-        response = usage_table.get_item(Key={"user_id": user_id})
-        item = response.get("Item")
+        try:
+            response = usage_table.get_item(Key={"user_id": user_id})
+            item = response.get("Item")
 
-        if not item:
-            return True
+            if not item:
+                return True
 
-        hoy = date.today().isoformat()
-        if item["fecha_ultimo_uso"] != hoy:
-            item["tokens_usados"] = 0
-            item["fecha_ultimo_uso"] = hoy
+            hoy = date.today().isoformat()
+            if item["fecha_ultimo_uso"] != hoy:
+                item["tokens_usados"] = 0
+                item["fecha_ultimo_uso"] = hoy
 
-            usage_table.update_item(
-                Key={"user_id": user_id},
-                UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
-                ExpressionAttributeValues={
-                    ":nuevo": item["tokens_usados"],
-                    ":fecha": item["fecha_ultimo_uso"],
-                },
-            )
+                usage_table.update_item(
+                    Key={"user_id": user_id},
+                    UpdateExpression="SET tokens_usados = :nuevo, fecha_ultimo_uso = :fecha",
+                    ExpressionAttributeValues={":nuevo": item["tokens_usados"], ":fecha": item["fecha_ultimo_uso"]},
+                )
 
-        limite = item.get("limite_tokens", LIMITE_TOKENS_DIARIO)
-
-        if item["tokens_usados"] > limite:
-            return False
-
-        return True
+            limite = item.get("limite_tokens", LIMITE_TOKENS_DIARIO)
+            return item["tokens_usados"] <= limite
+        except ClientError as e:
+            self.logger.error(f"DynamoDB ClientError in validate_use_tokens for user {user_id}: {e}")
+            return False # Assume token validation fails on error
+        except Exception as e:
+            self.logger.error(f"Unexpected error in validate_use_tokens for user {user_id}: {e}")
+            return False # Assume token validation fails on error
 
     def metrics_questions(
         self,
@@ -475,6 +481,7 @@ class LanggraphManager:
         self.client_lggp = boto3.client("bedrock-runtime", region_name="us-east-1")
         self.graph = self.build_graph()
 
+    @traceable(run_type="llm", name="Bedrock Direct Invoke")
     def invoke_bedrock(self, prompt):
 
         response = self.client_lggp.invoke_model(
@@ -493,6 +500,14 @@ class LanggraphManager:
 
         try:
             result = json.loads(response["body"].read())
+            usage = result.get("usage", {})
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+
+            run_tree = get_current_run_tree()
+            if run_tree:
+                run_tree.end(outputs={"output": result}, usage_metadata={"input_tokens": input_tokens, "output_tokens": output_tokens})
+
             llm_output = result["content"][0]["text"].strip().lower()
             self.logger.info(f"LLM Prompt: {prompt[:200]}...")
             self.logger.info(f"LLM Response: {llm_output[:200]}...")

@@ -28,7 +28,7 @@ from core.helpers.helpers import (
     is_context_independent_heuristic,
     classify_with_bedrock,
     get_agent_id,
-    titan_embed,
+    cohere_embed,
 )
 
 CORS_HEADERS = {
@@ -406,7 +406,7 @@ class ApiRequestHandler(RequestHandler):
 
                 if save_question:
                     with SessionLocal() as session:
-                        embedding = titan_embed(last_message, keywords_cache, config)
+                        embedding = cohere_embed(last_message, keywords_cache, config, "search_document")
                         new_q = SuggestedQuestions(
                             nombre=last_message,
                             activa=True,

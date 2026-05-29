@@ -99,7 +99,7 @@ def valite_existing_response(
         "bedrock-agent-runtime", region_name="us-east-1", config=boto_config
     )
 
-    query_embedding = titan_embed(user_input, keywords, boto_config)
+    query_embedding = cohere_embed(user_input, keywords, boto_config, "search_query")
 
     with SessionLocal() as session:
 
@@ -268,7 +268,7 @@ def get_agent_id(user_email: str):
     return "XKJTFFEMPC"
 
 
-def titan_embed(text: str, keywords: list, boto_config) -> list[float]:
+def cohere_embed(text: str, keywords: list, boto_config, input_type: str = "search_query") -> list[float]:
     client = boto3.client(
         "bedrock-runtime", region_name="us-east-1", config=boto_config
     )
@@ -281,10 +281,13 @@ def titan_embed(text: str, keywords: list, boto_config) -> list[float]:
     )
 
     response = client.invoke_model(
-        modelId="amazon.titan-embed-text-v2:0",
+        modelId="cohere.embed-multilingual-v3",
         contentType="application/json",
         accept="application/json",
-        body=json.dumps({"inputText": text_for_embedding}),
+        body=json.dumps({
+            "texts": [text_for_embedding],
+            "input_type": input_type,
+            })
     )
 
     body = json.loads(response["body"].read())

@@ -24,7 +24,7 @@ def get_engine():
         conn_str,
         pool_pre_ping=True,
         pool_size=10,
-        connect_args={"options": "-csearch_path=aptour,public"},
+        connect_args={"options": "-csearch_path=aptour,public,turi,catalog"},
     )
 
 

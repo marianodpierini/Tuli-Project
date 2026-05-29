@@ -10,7 +10,7 @@ from decimal import Decimal
 from pgvector.sqlalchemy import Vector
 
 from core.database.db import SessionLocal
-
+from typing import Dict
 import re
 from typing import Optional
 
@@ -275,16 +275,30 @@ def classify_with_bedrock(question: str) -> bool:
     return output == "NO", input_tokens + output_tokens
 
 
-def get_agent_id(user_email: str):
-    flag_doc_agent = os.environ["FLAG_DOC_AGENT"].lower() == "true"
-    dict_data = json.loads(os.environ["AGENT_TO_USERS"])
-    if flag_doc_agent:
-        return "RFPORJJMOR"
-    for key, value in dict_data.items():
-        if user_email in value:
-            return key
+def get_agent_config(user_email: str, agent_type: str = "sql") -> Dict[str, str]:
+    """
+    Determines the agent ID and alias ID based on user email and agent type.
+    This function assumes a mapping is available, e.g., from environment variables or S3.
+    For simplicity, using environment variables here.
+    """
 
-    return "XKJTFFEMPC"
+    if agent_type == "sql":
+        return {
+            "agent_id": os.getenv("SQL_AGENT_ID", "DRSOAFDOTR"),
+            "agent_alias_id": os.getenv("SQL_AGENT_ALIAS_ID", "XKJTFFEMPC"),
+        }
+    elif agent_type == "rag":
+        return {
+            "agent_id": os.getenv("RAG_AGENT_ID", "DRSOAFDOTR"),
+            "agent_alias_id": os.getenv("RAG_AGENT_ALIAS_ID", "RFPORJJMOR"),
+        }
+    else:
+        raise ValueError(f"Unknown agent type: {agent_type}")
+
+
+def get_agent_id(user_email: str, agent_type: str = "sql") -> str:
+    """Helper to get just the agent_id for backward compatibility if needed."""
+    return get_agent_config(user_email, agent_type)["agent_id"]
 
 
 def titan_embed(text: str, keywords: list, boto_config) -> list[float]:
