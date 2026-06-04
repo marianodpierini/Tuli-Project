@@ -207,6 +207,11 @@ class EmailProcessor:
             cuit_limpio = cuit_ops.replace("-", "")
             if cuit_limpio == cuit.replace("-", ""):
                 return operadores
+            
+            if cuit_ops.split("-")[1] == cuit.split("-")[1]:
+                print(f"Coincidencia parcial de CUIT encontrada: {cuit_ops} para CUIT {cuit}")
+                return operadores
+            
         return None
     
     def _buscar_operador_por_sender(self, sender: str) -> Optional[str]:
@@ -216,9 +221,9 @@ class EmailProcessor:
             print(f"CUIT {cuit} encontrado para sender {sender}")
             operadores = self._buscar_operador_por_cuit(cuit)
             if operadores:
-                return operadores
+                return cuit, operadores
             print(f"CUIT {cuit} encontrado para sender {sender}, pero no se encontraron operadores asociados.")
-            return "-1"
+            return None ,"-1"
         print(f"No se encontró CUIT para sender {sender}, se buscara por contenido de la factura.")
         return None
     
@@ -234,7 +239,7 @@ class EmailProcessor:
 
         data_by_sender = self._buscar_operador_por_sender(sender)
 
-        if data_by_sender == "-1":
+        if data_by_sender[1] == "-1":
             state = EmailsState.SIN_OPERADOR_ASOCIADO
             reason = f"El remitente {sender} está asociado a un CUIT sin operadores válidos."
 
@@ -265,7 +270,7 @@ class EmailProcessor:
 
         data_by_sender = self.insert_email()
 
-        if data_by_sender == "-1":
+        if data_by_sender[1] == "-1":
             return 0, 0
         
         attachments_data_for_db = []
@@ -291,10 +296,25 @@ class EmailProcessor:
                 print(f"No se pudo extraer datos de la factura para {filename}, se ignora.")
                 continue
             
-            cuit = data_agent.get("cuit")
+            cuit = data_by_sender[0] or data_agent.get("cuit")
             if not cuit:
                 print(f"No se pudo extraer CUIT para {filename}, se ignora archivo.")
+                invoice_case = InvoiceCases(
+                    email=self.email_id,
+                    attachment_hash=attachment_hash,
+                    attachment_name=filename,
+                    operator_cuit=cuit if cuit else None,
+                    operator_id=operadores_ids[0] if operadores_ids else None,
+                    state=FacturasState.EN_REVISION,
+                    state_reason="OPERADOR NO IDENTIFICADO",
+                    extraction_method="Bedrock"
+                )
+                session.add(invoice_case)
+                session.commit()
                 continue
+
+            if data_by_sender[0] != data_agent.get("cuit"):
+                print(f"Advertencia: CUIT extraído {data_agent.get('cuit')} no coincide con CUIT asociado al sender {data_by_sender[0]} para {filename}.")
 
             operadores = self._buscar_operador_por_cuit(cuit)
             if not operadores:
@@ -366,7 +386,8 @@ class EmailProcessor:
                     importe=servicio.get("importe"),
                     vinculado=servicio.get("vinculado"),
                     id_servicio=servicio.get("service_id"),
-                    id_reserva=servicio.get("reserve_id"),
+                    id_reserva_aptour=servicio.get("reserve_id"),
+                    id_reserva_mo=servicio.get("id_reserva_mo"),
                     importe_usd=servicio.get("importeUSD"),
                     ya_facturado=servicio.get("ya_facturado"),
                     factura=servicio.get("factura"),
@@ -375,7 +396,7 @@ class EmailProcessor:
                 services.append(service)
 
             invoice_extracted.services = services
-            
+            invoice_extracted.case = invoice_case
             attachments_data_for_db.append({
                 "filename": filename,
                 "s3_key": dest_key,

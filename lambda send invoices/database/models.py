@@ -41,6 +41,7 @@ class InvoicesExtractedEmails(Base):
     razon_social = Column(Text)
     moneda = Column(Text)
     importe_total = Column(Numeric(precision=12, scale=2))
+    case_id = Column(UUID(as_uuid=True), ForeignKey("facturas_bot.invoice_cases.case_id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -49,6 +50,8 @@ class InvoicesExtractedEmails(Base):
         back_populates="invoice",
         cascade="all, delete-orphan",
     )
+
+    case = relationship("InvoiceCases", back_populates="invoices")
 
 
 class ServicesExtractedEmails(Base):
@@ -63,8 +66,8 @@ class ServicesExtractedEmails(Base):
     pasajero = Column(Text)
     importe = Column(Numeric(12, 2))
     vinculado = Column(Boolean, default=False)
-    id_servicio = Column(Integer)
-    id_reserva = Column(Integer)
+    id_reserva_aptour = Column(Integer)
+    id_reserva_mo = Column(Integer)
     importe_usd = Column(Numeric(12, 2))
     ya_facturado = Column(Boolean, default=False)
     factura = Column(Text)
@@ -119,6 +122,7 @@ class InvoiceCases(Base):
 
     email = relationship("IncomingEmails", back_populates="cases")
     transitions = relationship("InvoiceTransitions", back_populates="case")
+    invoices = relationship("InvoicesExtractedEmails", back_populates="case")
 
 
 class InvoiceTransitions(Base):

@@ -36,21 +36,24 @@ class InvoicesValidation:
             with self.conn_mysql.cursor() as cursor:
                 placeholders_op = ",".join(["%s"] * len(self.operator_ids))
 
-                placeholders_cod = ",".join(["%s"] * len(codigos))
+                condiciones_codigo = " OR ".join(
+                    ["s.confirmation_code LIKE %s"] * len(codigos)
+                )
 
                 query = f"""
                     SELECT s.id, s.confirmation_code, s.reserve_id, s.aptour_reserve_id,
                         s.date_in, s.balance, s.operator_id, s.operator_name
                     FROM production_mo_tours.services s
+                    LEFT JOIN production_mo_tours.reserves r ON r.id = s.reserve_id
                     WHERE s.operator_id IN ({placeholders_op})
-                    AND s.balance > 0
+                    AND (s.balance > 0 OR s.balance IS NULL)
                     AND s.date_in >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-                    AND s.date_in <= DATE_ADD(NOW(), INTERVAL 6 MONTH)
-                    AND s.confirmation_code IN ({placeholders_cod})
+                    AND s.date_in <= DATE_ADD(NOW(), INTERVAL 11 MONTH)
+                    AND ({condiciones_codigo})
                     LIMIT 50
                 """
 
-                params = self.operator_ids + codigos
+                params = self.operator_ids + [f"%{self.normalizar_codigo(codigo)}%" for codigo in codigos]
 
                 cursor.execute(query, params)
 
@@ -109,18 +112,19 @@ class InvoicesValidation:
         servicios = self.data_agent.get("servicios", [])
         needs_retry = False
 
-        codigos = list({self.normalizar_codigo(s.get("voucher")) for s in servicios if s.get("voucher")})
+        codigos = list({s.get("voucher") for s in servicios if s.get("voucher")})
 
         if not codigos:
             return self.data_agent, needs_retry
         resultados = self.buscar_servicios(codigos)
 
         if not resultados:
+            needs_retry = True
             return self.data_agent, needs_retry
 
 
         reserve_ids = list(
-                r.get("reserve_id") or r.get("aptour_reserve_id")
+                r.get("aptour_reserve_id") or r.get("reserve_id")
                 for r in resultados.values()
                 if r
         )
@@ -132,25 +136,38 @@ class InvoicesValidation:
         for s in servicios:
             original_voucher = s.get("voucher", "")
             codigo = self.normalizar_codigo(original_voucher)
+
+            regex = re.compile(
+                r'(?:(?<!\d)|(?<=540)|(?<=540[\s\-\/\.\_\:]))'
+                + re.escape(original_voucher)
+                + r'(?!\d)'
+            )
+
+            for key in resultados.keys():
+                if regex.search(key):
+                    codigo = key
+                    break
+
             s["vinculado"] = False
             encontrado = resultados.get(codigo)
             if not encontrado:
                 s["vinculado"] = False
                 continue
 
-            rid = encontrado.get("aptour_reserve_id") or encontrado.get("reserve_id")
+            rid = encontrado.get("aptour_reserve_id")
+            id_reserva_mo = encontrado.get("reserve_id")
 
             s["vinculado"] = True
             s["service_id"] = encontrado["id"]
             s["reserve_id"] = rid
             s["importeUSD"] = encontrado["balance"]
+            s["id_reserva_mo"] = id_reserva_mo
 
             if rid in facturas:
                 s["ya_facturado"] = True
                 s["factura"] = facturas[rid]
             else:
                 s["pending"] = True
-                needs_retry = True
 
             servicios_enriquecidos.append(s)
 

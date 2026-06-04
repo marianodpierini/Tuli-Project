@@ -39,7 +39,7 @@ def lambda_handler(event, context):
             )
             .join(
                 InvoiceCases,
-                InvoicesExtractedEmails.cuit == InvoiceCases.operator_cuit
+                InvoicesExtractedEmails.case_id == InvoiceCases.case_id
             )
             .join(
                 IncomingEmails,
@@ -50,7 +50,6 @@ def lambda_handler(event, context):
                 InvoiceCases.case_id == InvoiceTransitions.case_id
             )
             .filter(
-                InvoicesExtractedEmails.numero_factura == cast(InvoiceTransitions.metadata_, JSONB)['numero_factura'].astext,
                 InvoiceCases.state == 'LISTO PARA CARGAR'
             )
             .options(joinedload(InvoicesExtractedEmails.services))
@@ -81,7 +80,8 @@ def lambda_handler(event, context):
                         "importe": s.importe,
                         "vinculado": s.vinculado,
                         "id_servicio": s.id_servicio,
-                        "id_reserva": s.id_reserva,
+                        "id_reserva_aptour": s.id_reserva_aptour,
+                        "id_reserva_mo": s.id_reserva_mo,
                         "ya_facturado": s.ya_facturado
                     }
                     for s in iee.services
