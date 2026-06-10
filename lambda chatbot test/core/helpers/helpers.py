@@ -48,9 +48,9 @@ def normalize_decimals(obj):
 def normalize_event(event):
     enriched_event = event
     http_method = event.get("httpMethod", "")
-    path = event.get("path", "")
+    action_group = event.get("actionGroup", "")
 
-    if http_method == "POST":
+    if http_method == "POST" and action_group == "":
         headers = event.get("headers", {})
         body = event.get("body", {})
         body_json = json.loads(body)
@@ -250,22 +250,22 @@ def get_agents_mapping():
 
 
 def get_agent_id(user_email: str):
-    flag_doc_agent = os.environ["FLAG_DOC_AGENT"].lower() == "true"
+    # flag_doc_agent = os.environ["FLAG_DOC_AGENT"].lower() == "true"
 
-    dict_data = get_agents_mapping()
+    # dict_data = get_agents_mapping()
 
-    if flag_doc_agent:
-        return "RFPORJJMOR"
+    # if flag_doc_agent:
+    #     return "RFPORJJMOR"
 
-    user_email = user_email.strip().lower()
+    # user_email = user_email.strip().lower()
 
-    for key, value in dict_data.items():
-        users = [u.strip().lower() for u in value]
+    # for key, value in dict_data.items():
+    #     users = [u.strip().lower() for u in value]
 
-        if user_email in users:
-            return key
+    #     if user_email in users:
+    #         return key
 
-    return "XKJTFFEMPC"
+    return "AHGTFH88AS"
 
 
 def cohere_embed(text: str, keywords: list, boto_config, input_type: str = "search_query") -> list[float]:

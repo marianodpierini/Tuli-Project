@@ -6,8 +6,7 @@ import botocore
 
 from datetime import datetime
 
-from sqlalchemy.inspection import inspect
-from sqlalchemy import inspect, extract, select, func, update, text
+from sqlalchemy import select, func, update, text, or_
 
 from core.improved_context_classes import EnhancedUserContext, CustomJSONEncoder
 from core.database.db import SessionLocal, engine
@@ -18,6 +17,7 @@ from core.database.models import (
     ColumnMetadata,
     Glossary,
     BusinessRules,
+    TipsOperadores,
 )
 
 from core.helpers.helpers import (
@@ -55,11 +55,9 @@ class BedrockRequestHandler(RequestHandler):
         self.routes = {
             "/consulta": self.handle_consulta,
             "/schema": self.handle_schema,
-            "/system_metrics": self.handle_system_metrics,
-            "/diagnostico": self.handle_diagnostico,
-            "/diagnostics": self.handle_diagnostics,
             "/stored_procedure": self.handle_stored_procedure,
             "/discover_tables": self.handle_discover_tables,
+            "/buscar_operadores": self.handle_buscar_operadores,
         }
 
     def format_response_for_bedrock(
@@ -445,201 +443,6 @@ class BedrockRequestHandler(RequestHandler):
                 prompt_session_attributes=self.event.prompt_session_attributes,
             )
 
-    def handle_system_metrics(self):
-        """Endpoint para métricas del sistema"""
-        self.logger.info(
-            f"[{self.event_id}] Procesando solicitud de métricas del sistema"
-        )
-
-        try:
-            # metrics = get_system_metrics()
-
-            return self.format_response_for_bedrock(
-                action_group=self.event.action_group,
-                api_path=self.event.api_path,
-                http_method=self.event.http_method,
-                # data={"system_metrics": metrics},
-                session_attributes=self.event.session_attributes,
-                prompt_session_attributes=self.event.prompt_session_attributes,
-            )
-        except Exception as e:
-            self.logger.error(f"Error en endpoint de métricas del sistema: {str(e)}")
-            return self.format_response_for_bedrock(
-                action_group=self.event.action_group,
-                api_path=self.event.api_path,
-                http_method=self.event.http_method,
-                data={"error": str(e)},
-                status_code=500,
-            )
-
-    def quick_database_diagnostics(self, full_check=False):
-        """Ejecuta diagnósticos críticos para identificar problemas comunes"""
-        diagnostics = {}
-        # 1. Test conexión: simplemente intentamos abrir una sesión y hacer una query mínima
-        try:
-            with SessionLocal() as session:
-                session.execute(select(1))
-                diagnostics["connection"] = True
-        except Exception:
-            diagnostics["connection"] = False
-            return diagnostics
-
-        # 2. Verificar si existe la tabla
-        inspector = inspect(engine)
-        table_name = ServiciosTcktsRvas.__tablename__
-        schema = getattr(ServiciosTcktsRvas.__table__, "schema", "public")
-
-        table_exists = table_name in inspector.get_table_names(schema=schema)
-        diagnostics["table_exists"] = table_exists
-
-        if not table_exists:
-            return diagnostics
-
-        # 3. Obtener metadatos de la columna fec_ape
-        columns = inspector.get_columns(table_name, schema=schema)
-        fec_ape_info = next((col for col in columns if col["name"] == "fec_ape"), None)
-
-        diagnostics["fec_ape_column"] = {
-            "data_type": str(fec_ape_info["type"]) if fec_ape_info else None,
-            "is_nullable": fec_ape_info["nullable"] if fec_ape_info else None,
-        }
-
-        # 4. Si full_check, contar registros del año 2024 usando ORM puro
-        if full_check:
-            with SessionLocal() as session:
-                count_2024 = (
-                    session.query(func.count())
-                    .select_from(ServiciosTcktsRvas)
-                    .filter(extract("year", ServiciosTcktsRvas.fec_ape) == 2024)
-                    .scalar()
-                )
-                diagnostics["records_2024"] = count_2024
-
-        return diagnostics
-
-    def handle_diagnostico(self):
-        self.logger.info(f"[{self.event_id}] Petición a endpoint /diagnostico")
-
-        diag_start_time = pytime.time()
-        diagnostics = self.quick_database_diagnostics(full_check=True)
-        diag_time = pytime.time() - diag_start_time
-        self.logger.info(
-            f"[{self.event_id}] Diagnóstico completado en {diag_time:.2f}s"
-        )
-
-        response_data = {"diagnostico": diagnostics}
-
-        return self.format_response_for_bedrock(
-            action_group=self.event.action_group,
-            api_path=self.event.api_path,
-            http_method=self.event.http_method,
-            data=response_data,
-            session_attributes=self.event.session_attributes,
-            prompt_session_attributes=self.event.prompt_session_attributes,
-        )
-
-    def direct_diagnostic(self):
-        """Realiza un diagnóstico directo de la conexión a la base de datos"""
-        try:
-            diagnostics = {}
-
-            # Iniciar sesión SQLAlchemy
-            with SessionLocal() as session:
-                # 1. Obtener info de conexión
-                result = session.execute(
-                    select(
-                        func.current_database(),
-                        func.current_schema(),
-                        func.current_user(),
-                    )
-                ).first()
-
-                connection_info = {
-                    "current_database": result[0],
-                    "current_schema": result[1],
-                    "current_user": result[2],
-                }
-
-                self.logger.info(
-                    f"Conexión a: DB={connection_info['current_database']}, "
-                    f"Schema={connection_info['current_schema']}, "
-                    f"User={connection_info['current_user']}"
-                )
-
-            # 2. Verificar si la tabla existe
-            inspector = inspect(engine)
-            schema = getattr(ServiciosTcktsRvas.__table__, "schema", "public")
-            table_name = ServiciosTcktsRvas.__tablename__
-
-            table_exists = table_name in inspector.get_table_names(schema=schema)
-            self.logger.info(f"¿La tabla existe? {table_exists}")
-
-            # Inicializar contadores
-            count = 0
-            count_2024 = 0
-
-            # 3. Si la tabla existe, hacer los conteos
-            if table_exists:
-                with SessionLocal() as session:
-                    # Total de registros
-                    count = (
-                        session.query(func.count())
-                        .select_from(ServiciosTcktsRvas)
-                        .scalar()
-                    )
-                    self.logger.info(f"Cantidad real de registros: {count}")
-
-                    # Registros del año 2024
-                    count_2024 = (
-                        session.query(func.count())
-                        .select_from(ServiciosTcktsRvas)
-                        .filter(extract("year", ServiciosTcktsRvas.fec_ape) == 2024)
-                        .scalar()
-                    )
-                    self.logger.info(f"Registros de 2024: {count_2024}")
-
-            return {
-                "connection": connection_info,
-                "table_exists": table_exists,
-                "record_count": count,
-                "records_2024": count_2024,
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error en diagnóstico: {str(e)}")
-            return {"error": str(e)}
-
-    def handle_diagnostics(self):
-        try:
-            self.logger.info(f"[{self.event_id}] Petición a endpoint /diagnostics")
-
-            # Verificar conexión directa
-            conn_test = self.direct_diagnostic()
-
-            response_data = {"connection_test": conn_test}
-
-            return self.format_response_for_bedrock(
-                action_group=self.event.action_group,
-                api_path=self.event.api_path,
-                http_method=self.event.http_method,
-                data=response_data,
-                session_attributes=self.event.session_attributes,
-                prompt_session_attributes=self.event.prompt_session_attributes,
-            )
-        except Exception as diag_error:
-            self.logger.error(
-                f"[{self.event_id}] Error en diagnósticos: {str(diag_error)}"
-            )
-            return self.format_response_for_bedrock(
-                action_group=self.event.action_group,
-                api_path=self.event.api_path,
-                http_method=self.event.http_method,
-                data={"error": str(diag_error)},
-                status_code=500,
-                session_attributes=self.event.session_attributes,
-                prompt_session_attributes=self.event.prompt_session_attributes,
-            )
-
     def handle_stored_procedure(self):
         content = self.event.request_body["content"]["application/json"]["properties"]
         procedure = None
@@ -670,6 +473,119 @@ class BedrockRequestHandler(RequestHandler):
                 rows = []
 
             return {"results": rows}
+
+    def handle_buscar_operadores(self):
+        """Nueva herramienta para obtener información detallada de un cliente"""
+        self.logger.info(f"[{self.event_id}] Ejecutando herramienta buscar_operadores")
+    
+        properties = self.event.parameters
+        
+        destino = None
+        servicio = None
+        marca = None
+        categoria = None
+        modalidad = None
+
+
+        for prop in properties:
+            if prop.get("name") == "destino":
+                destino = prop.get("value")
+            elif prop.get("name") == "servicio":
+                servicio = prop.get("value")
+            elif prop.get("name") == "marca":
+                marca = prop.get("value")
+            elif prop.get("name") == "categoria":
+                categoria = prop.get("value")
+            elif prop.get("name") == "modalidad":
+                modalidad = prop.get("value")
+
+        if not destino:
+            return self.format_response_for_bedrock(
+            action_group=self.event.action_group,
+            api_path=self.event.api_path,
+            http_method=self.event.http_method,
+            data={"error": "Para poder responderte necesito que me indiques el destino"},
+            session_attributes=self.event.session_attributes,
+            prompt_session_attributes=self.event.prompt_session_attributes,
+        )
+
+        stmt = select(
+            TipsOperadores.operador,
+            TipsOperadores.prestador,
+            TipsOperadores.tipo_prestador,
+            TipsOperadores.region,
+            TipsOperadores.pais,
+            TipsOperadores.destino,
+            TipsOperadores.servicios,
+            TipsOperadores.tipo_servicio,
+            TipsOperadores.categoria,
+            TipsOperadores.moneda,
+            TipsOperadores.especificaciones_comision,
+            TipsOperadores.comentarios,
+            TipsOperadores.prioridad,
+        )
+
+        if destino:
+            stmt = stmt.where(
+                or_(
+                    func.f_unaccent(
+                        func.array_to_string(TipsOperadores.region, ", ")
+                    ).ilike(f"%{destino}%"),
+                    func.f_unaccent(
+                        func.array_to_string(TipsOperadores.pais, ", ")
+                    ).ilike(f"%{destino}%"),
+                    func.f_unaccent(
+                        func.coalesce(TipsOperadores.destino, "")
+                    ).ilike(f"%{destino}%"),
+                )
+            )
+
+        if servicio:
+            stmt = stmt.where(
+                func.f_unaccent(
+                    func.array_to_string(TipsOperadores.servicios, ", ")
+                ).ilike(f"%{servicio}%")
+            )
+
+        if marca:
+            stmt = stmt.where(
+                func.f_unaccent(
+                    TipsOperadores.prestador
+                ).ilike(f"%{marca}%")
+            )
+
+        if categoria:
+            stmt = stmt.where(
+                func.f_unaccent(
+                    func.array_to_string(TipsOperadores.categoria, ", ")
+                ).ilike(f"%{categoria}%")
+            )
+
+        if modalidad:
+            stmt = stmt.where(
+                func.f_unaccent(
+                    func.array_to_string(TipsOperadores.tipo_servicio, ", ")
+                ).ilike(f"%{modalidad}%")
+            )
+
+        stmt = (
+            stmt
+            .order_by(TipsOperadores.prioridad.asc().nulls_last())
+            .limit(50)
+        )
+
+        with SessionLocal() as session:
+            results = session.execute(stmt).fetchall()
+            results = [dict(r._mapping) for r in results]
+
+        return self.format_response_for_bedrock(
+            action_group=self.event.action_group,
+            api_path=self.event.api_path,
+            http_method=self.event.http_method,
+            data=results,
+            session_attributes=self.event.session_attributes,
+            prompt_session_attributes=self.event.prompt_session_attributes,
+        )
 
     def handle_discover_tables(self):
         config = botocore.config.Config(

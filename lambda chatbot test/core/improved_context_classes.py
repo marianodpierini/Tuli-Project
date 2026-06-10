@@ -13,6 +13,7 @@ from logging import Logger
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.dialects import postgresql
 
 from core.database.db import SessionLocal
 
@@ -57,77 +58,6 @@ class EnhancedQueryManager:
         self.max_query_length = max_query_length
         self.query_timeout_ms = query_timeout_ms
 
-    def preprocess_query(self, query):
-        """Preprocesa y limpia la consulta SQL para su ejecución"""
-        try:
-            query_info = {
-                "evento": "QUERY CONSULT",
-                "message": "Query preprocesamiento",
-                "query": " ".join(query.split()),
-            }
-
-            self.logger.info(json.dumps(query_info))
-
-            if isinstance(query, dict):
-                if "sql" in query:
-                    query = query["sql"]
-                elif "query" in query:
-                    query = query["query"]
-                else:
-                    query = str(query)
-            elif isinstance(query, str):
-                if query.strip().startswith("{") and query.strip().endswith("}"):
-                    try:
-                        parsed = json.loads(query)
-                        if isinstance(parsed, dict):
-                            if "sql" in parsed:
-                                query = parsed["sql"]
-                            elif "query" in parsed:
-                                query = parsed["query"]
-                    except json.JSONDecodeError:
-                        query = (
-                            query.replace("{sql=", "")
-                            .replace("{query=", "")
-                            .replace("}", "")
-                        )
-
-            query = query.strip()
-            query = query.replace('"', '"').replace("\\'", "'")
-            query = query.replace("\\n", " ").replace("\\r", " ")
-            query = " ".join(query.split())
-
-            query_info["query"] = query
-            query_info["message"] = "Query despues del preprocesamiento"
-
-            self.logger.info(json.dumps(query_info))
-            return query
-        except Exception as e:
-            self.logger.error(
-                f"Error preprocessing query: {str(e)}\n{traceback.format_exc()}"
-            )
-            raise ValueError(f"Invalid query format: {str(e)}")
-
-    def validate_stage1(self, query):
-        """Enhanced first-stage validation"""
-        try:
-            processed_query = self.preprocess_query(query)
-
-            if not processed_query or len(processed_query.strip()) == 0:
-                self.logger.warning("Se recibió una consulta vacía")
-                raise ValueError("La consulta no puede estar vacía")
-
-            if re.search(
-                rf"\b({'|'.join(PROHIBITED_KEYWORDS)})\b", processed_query.lower()
-            ):
-                self.logger.warning("Se detectaron palabras prohibidas en la consulta")
-                return "SELECT NULL AS resultado"
-
-            return processed_query
-
-        except Exception as e:
-            self.logger.error(f"Error en validate_stage1: {str(e)}")
-            raise
-
     def add_schema_prefix_if_missing(self, query):
         """Añade el prefijo de esquema si falta en la consulta"""
         for allowed_table in self.allowed_tables:
@@ -149,28 +79,6 @@ class EnhancedQueryManager:
                         query,
                         flags=re.IGNORECASE,
                     )
-        return query
-
-    def validate_stage2(self, query):
-        """Versión optimizada para rendimiento con corrección automática de esquema"""
-        query = self.add_schema_prefix_if_missing(query)
-
-        table_check_passed = False
-        for table in self.allowed_tables:
-            table_name = table.split(".")[-1]
-            if table_name.lower() in query.lower() or table.lower() in query.lower():
-                table_check_passed = True
-                break
-
-        if not table_check_passed:
-            self.logger.warning(f"Tabla no permitida: {query}")
-            raise Exception("Consulta intenta acceder a tablas no permitidas.")
-
-        query = f"SET statement_timeout = {self.query_timeout_ms};\n{query}"
-
-        if "limit" not in query.lower() and "count(" not in query.lower():
-            query += " LIMIT 500"
-
         return query
 
 
@@ -336,11 +244,15 @@ class EnhancedQueryExecutor:
         )
 
     def logg_querys(self, query, message, query_id):
+        sql = query.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True}
+        )
         query_info = {
             "evento": "QUERY CONSULT",
             "message": message,
             "query_id": query_id,
-            "query": " ".join(query.split()),
+            "query": " ".join(str(sql).split()),
         }
 
         self.logger.info(json.dumps(query_info))
@@ -356,35 +268,15 @@ class EnhancedQueryExecutor:
         original_query = query
         error_occurred = None
 
-        # Si no hay contexto de usuario, crear uno básico
         if user_context is None:
             user_context = EnhancedUserContext()
 
         try:
-
-            self.logg_querys(query, "Query SQL Original", query_id)
-
-            # Procesar y validar la consulta
-            processed_query = self.validator.validate_stage1(query)
-            corrected_query = self.validator.validate_stage2(processed_query)
-
-            # Guardar la corrección
-            if not hasattr(self, "query_corrections"):
-                self.query_corrections = {}
-            self.query_corrections[query] = corrected_query
-            query = corrected_query
-
-            self.logg_querys(query, "Query SQL Validada", query_id)
-
-            self.logger.info(
-                f"[{query_id}][{user_context.get_user_hash()}] Conexión obtenida."
-            )
-
             with SessionLocal() as session:
                 db_start_time = pytime.time()
                 self.logg_querys(query, "Ejecutando SQL", query_id)
 
-                result = session.execute(text(query))
+                result = session.execute(query)
 
                 try:
                     rows = result.fetchall()

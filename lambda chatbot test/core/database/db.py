@@ -9,7 +9,7 @@ from pgvector.psycopg2 import register_vector
 def get_secret() -> dict:
     sm = boto3.client("secretsmanager")
     resp = sm.get_secret_value(
-        SecretId="arn:aws:secretsmanager:us-east-1:506673277516:secret:aerodestinationbase-6Y7lcH"
+        SecretId="airbytedestination_airbyte2_postgrs"
     )
     return json.loads(resp["SecretString"])
 
