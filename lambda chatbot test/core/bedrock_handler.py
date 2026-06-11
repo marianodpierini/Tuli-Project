@@ -1,15 +1,14 @@
 import json
+import re
 import traceback
 import uuid
 import time as pytime
 import botocore
 
-from datetime import datetime
-
-from sqlalchemy import select, func, update, text, or_
+from sqlalchemy import select, func, text, or_
 
 from core.improved_context_classes import EnhancedUserContext, CustomJSONEncoder
-from core.database.db import SessionLocal, engine
+from core.database.db import SessionLocal
 from core.database.models import (
     ServiciosTcktsRvas,
     SuggestedQuestions,
@@ -18,6 +17,7 @@ from core.database.models import (
     Glossary,
     BusinessRules,
     TipsOperadores,
+    HotelesRecomendados,
 )
 
 from core.helpers.helpers import (
@@ -53,11 +53,10 @@ class BedrockRequestHandler(RequestHandler):
         self.start_time = pytime.time()
         self.bedrock_session_id = self.event.session_id
         self.routes = {
-            "/consulta": self.handle_consulta,
-            "/schema": self.handle_schema,
             "/stored_procedure": self.handle_stored_procedure,
             "/discover_tables": self.handle_discover_tables,
             "/buscar_operadores": self.handle_buscar_operadores,
+            "/buscar_hoteles": self.handle_buscar_hoteles,
         }
 
     def format_response_for_bedrock(
@@ -122,327 +121,6 @@ class BedrockRequestHandler(RequestHandler):
 
         return user_context
 
-    def extract_query_fast(self):
-        """Extrae la consulta SQL de la manera más rápida posible"""
-        try:
-            properties = (
-                self.event.request_body.get("content", {})
-                .get("application/json", {})
-                .get("properties", [])
-            )
-
-            for prop in properties:
-                if prop.get("name") in ["content", "query", "sql"]:
-                    value = prop.get("value")
-
-                    if isinstance(value, dict) and ("query" in value or "sql" in value):
-                        return value.get("query", value.get("sql", ""))
-
-                    if isinstance(value, str):
-                        if value.startswith("{query="):
-                            return value[7:].rstrip("}")
-                        if value.startswith("{sql="):
-                            return value[5:].rstrip("}")
-                        if value.startswith("{") and value.endswith("}"):
-                            try:
-                                content_dict = json.loads(value)
-                                if isinstance(content_dict, dict):
-                                    return content_dict.get(
-                                        "query", content_dict.get("sql", "")
-                                    )
-                            except:
-                                pass
-                        return value
-
-                    return str(value)
-        except Exception as e:
-            self.logger.error(f"Error extrayendo consulta: {str(e)}")
-            return None
-
-    def handle_consulta(self):
-        self.logger.info(
-            f"[{self.event_id}] Procesando consulta con sessionId: {self.bedrock_session_id}"
-        )
-
-        # Extraer consulta
-        query = self.extract_query_fast()
-
-        if not query:
-            self.logger.error(f"[{self.event_id}] No se encontró consulta SQL")
-            return self.format_response_for_bedrock(
-                action_group=self.event.action_group,
-                api_path=self.event.api_path,
-                http_method=self.event.http_method,
-                data={"error": "No se encontró consulta SQL en la solicitud"},
-                status_code=400,
-                session_attributes=self.event.session_attributes,
-                prompt_session_attributes=self.event.prompt_session_attributes,
-            )
-
-        # Ejecutar consulta
-        sql_start = pytime.time()
-        results = self.executor.execute(query, self.user_context)
-        sql_time = pytime.time() - sql_start
-
-        new_id = self.event.session_attributes.get("suggestion_id")
-
-        if new_id != "":
-            with SessionLocal() as session:
-                stmt = (
-                    update(SuggestedQuestions)
-                    .where(SuggestedQuestions.id == new_id)
-                    .values(sql_query=query)
-                )
-
-                session.execute(stmt)
-                session.commit()
-
-        self.logger.info(
-            f"[{self.event_id}] Consulta ejecutada en {sql_time:.2f}s con session: {self.bedrock_session_id}"
-        )
-
-        if isinstance(results, dict) and "error" in results:
-            return self.format_response_for_bedrock(
-                action_group=self.event.action_group,
-                api_path=self.event.api_path,
-                http_method=self.event.http_method,
-                data=results,
-                status_code=400,
-                session_attributes=self.event.session_attributes,
-                prompt_session_attributes=self.event.prompt_session_attributes,
-            )
-
-        # Preparar respuesta exitosa
-        total_time = pytime.time() - self.start_time
-
-        response_data = {
-            "results": (
-                results.get("results", []) if isinstance(results, dict) else results
-            ),
-            "count": (
-                len(results.get("results", []))
-                if isinstance(results, dict) and "results" in results
-                else 0
-            ),
-            "time_ms": int(total_time * 1000),
-            "cache_hit": (
-                results.get("cache_hit", False) if isinstance(results, dict) else False
-            ),
-            "session_info": {
-                "bedrock_session_id": self.bedrock_session_id,
-                "maintained_context": True,
-                # "user_summary": self.user_context.get_session_summary()
-            },
-        }
-
-        # CRÍTICO: Mantener sessionAttributes para el contexto
-        enhanced_session_attributes = self.event.session_attributes.copy()
-        enhanced_session_attributes.update(
-            {
-                "last_query_time": datetime.now().isoformat(),
-                "query_count": int(enhanced_session_attributes.get("query_count", 0))
-                + 1,
-                "lambda_session_id": self.bedrock_session_id,
-                "user_hash": self.user_context.get_user_hash(),
-            }
-        )
-
-        return self.format_response_for_bedrock(
-            action_group=self.event.action_group,
-            api_path=self.event.api_path,
-            http_method=self.event.http_method,
-            data=response_data,
-            session_attributes=enhanced_session_attributes,
-            prompt_session_attributes=self.event.prompt_session_attributes,
-        )
-
-    def get_schema(self, table_names=None):
-        """
-        Obtiene dinámicamente el esquema y metadatos desde el catálogo.
-        """
-        schema_dict = {}
-        try:
-            with SessionLocal() as session:
-                table_sql = select(
-                    TableMetadata.table_name,
-                    TableMetadata.esquema,
-                    TableMetadata.descripcion_negocio,
-                    TableMetadata.granularidad,
-                    TableMetadata.dominio,
-                    TableMetadata.default_time_column,
-                ).filter(TableMetadata.usable_por_turi == True)
-                if table_names:
-                    table_sql = table_sql.filter(
-                        TableMetadata.table_name.in_(table_names)
-                    )
-                    result = session.execute(table_sql)
-                else:
-                    result = session.execute(table_sql)
-
-                tables = [dict(row._mapping) for row in result]
-                found_table_names = [t["table_name"] for t in tables]
-
-                if table_names:
-                    for requested in table_names:
-                        if requested not in found_table_names:
-                            self.logger.warning(
-                                f"La tabla '{requested}' no existe en table_metadata o usable_por_turi es false."
-                            )
-
-                if not tables:
-                    return {}
-
-                col_sql = select(
-                    ColumnMetadata.table_name,
-                    ColumnMetadata.esquema,
-                    ColumnMetadata.column_name,
-                    ColumnMetadata.tipo_dato,
-                    ColumnMetadata.descripcion_negocio,
-                    ColumnMetadata.sinonimos_usuario,
-                    ColumnMetadata.valores_posibles,
-                    ColumnMetadata.ejemplo_filtro,
-                ).filter(
-                    ColumnMetadata.usable_por_turi == True,
-                    ColumnMetadata.table_name.in_(found_table_names),
-                )
-                cols_result = session.execute(col_sql)
-                all_columns = [dict(row._mapping) for row in cols_result]
-
-                domains = list({t["dominio"] for t in tables if t["dominio"]})
-                glossary_by_domain = {}
-                rules_by_domain = {}
-
-                if domains:
-                    gloss_sql = select(
-                        Glossary.termino,
-                        Glossary.dominio,
-                        Glossary.significado,
-                        Glossary.mapeo_tecnico,
-                        Glossary.sinonimos,
-                    ).filter(
-                        Glossary.usable_por_turi == True, Glossary.dominio.in_(domains)
-                    )
-
-                    gloss_result = session.execute(gloss_sql)
-                    for row in gloss_result:
-                        d = row.dominio
-                        if d not in glossary_by_domain:
-                            glossary_by_domain[d] = {}
-                        glossary_by_domain[d][row.termino] = {
-                            "significado": row.significado,
-                            "mapeo_tecnico": row.mapeo_tecnico,
-                            "sinonimos": row.sinonimos,
-                        }
-
-                    rules_sql = select(
-                        BusinessRules.nombre_regla,
-                        BusinessRules.dominio,
-                        BusinessRules.definicion,
-                        BusinessRules.rule_sql,
-                    ).filter(
-                        BusinessRules.estado_metadata == "validado",
-                        BusinessRules.dominio.in_(domains),
-                    )
-
-                    rules_result = session.execute(rules_sql)
-                    for row in rules_result:
-                        d = row.dominio
-                        if d not in rules_by_domain:
-                            rules_by_domain[d] = {}
-                        rules_by_domain[d][row.nombre_regla] = {
-                            "definicion": row.definicion,
-                            "rule_sql": row.rule_sql,
-                        }
-
-                for t in tables:
-                    full_key = f"{t['esquema']}.{t['table_name']}"
-                    dom = t["dominio"]
-                    schema_dict[full_key] = {
-                        "descripcion_negocio": t["descripcion_negocio"],
-                        "granularidad": t["granularidad"],
-                        "dominio": dom,
-                        "default_time_column": t["default_time_column"],
-                        "columns": {
-                            c["column_name"]: {
-                                "tipo_dato": c["tipo_dato"],
-                                "descripcion_negocio": c["descripcion_negocio"],
-                                "sinonimos_usuario": c["sinonimos_usuario"],
-                                "valores_posibles": c["valores_posibles"],
-                                "ejemplo_filtro": c["ejemplo_filtro"],
-                            }
-                            for c in all_columns
-                            if c["table_name"] == t["table_name"]
-                            and c["esquema"] == t["esquema"]
-                        },
-                        "glossary": glossary_by_domain.get(dom, {}),
-                        "business_rules": rules_by_domain.get(dom, {}),
-                    }
-            return schema_dict
-        except Exception as e:
-            self.logger.error(
-                f"Error al obtener el esquema desde el catálogo: {str(e)}"
-            )
-            raise
-
-    def handle_schema(self):
-        self.logger.info(f"[{self.event_id}] Procesando solicitud de esquema")
-
-        table_names = None
-        try:
-            properties = (
-                self.event.request_body.get("content", {})
-                .get("application/json", {})
-                .get("properties", [])
-            )
-            for prop in properties:
-                if prop.get("name") == "table_names":
-                    val = prop.get("value")
-                    if val:
-                        if isinstance(val, str):
-                            try:
-                                table_names = json.loads(val.replace("'", '"'))
-                            except:
-                                table_names = [
-                                    t.strip().strip("'\"[]")
-                                    for t in val.split(",")
-                                    if t.strip()
-                                ]
-                        elif isinstance(val, list):
-                            table_names = val
-        except Exception as e:
-            self.logger.warning(
-                f"Error parseando table_names, se procederá sin filtro: {str(e)}"
-            )
-
-        try:
-            schema = self.get_schema(table_names)
-
-            response_data = {"schema": schema}
-            total_time = pytime.time() - self.start_time
-
-            return self.format_response_for_bedrock(
-                action_group=self.event.action_group,
-                api_path=self.event.api_path,
-                http_method=self.event.http_method,
-                data=response_data,
-                session_attributes=self.event.session_attributes,
-                prompt_session_attributes=self.event.prompt_session_attributes,
-            )
-        except Exception as schema_error:
-
-            self.logger.error(
-                f"[{self.event_id}] Error obteniendo esquema: {str(schema_error)}"
-            )
-            return self.format_response_for_bedrock(
-                action_group=self.event.action_group,
-                api_path=self.event.api_path,
-                http_method=self.event.http_method,
-                data={"error": f"Error obteniendo esquema: {str(schema_error)}"},
-                status_code=500,
-                session_attributes=self.event.session_attributes,
-                prompt_session_attributes=self.event.prompt_session_attributes,
-            )
-
     def handle_stored_procedure(self):
         content = self.event.request_body["content"]["application/json"]["properties"]
         procedure = None
@@ -473,41 +151,31 @@ class BedrockRequestHandler(RequestHandler):
                 rows = []
 
             return {"results": rows}
-
-    def handle_buscar_operadores(self):
-        """Nueva herramienta para obtener información detallada de un cliente"""
-        self.logger.info(f"[{self.event_id}] Ejecutando herramienta buscar_operadores")
-    
+        
+    def _get_parameters(self, dict_parameters: dict):
         properties = self.event.parameters
         
-        destino = None
-        servicio = None
-        marca = None
-        categoria = None
-        modalidad = None
-
-
         for prop in properties:
-            if prop.get("name") == "destino":
-                destino = prop.get("value")
-            elif prop.get("name") == "servicio":
-                servicio = prop.get("value")
-            elif prop.get("name") == "marca":
-                marca = prop.get("value")
-            elif prop.get("name") == "categoria":
-                categoria = prop.get("value")
-            elif prop.get("name") == "modalidad":
-                modalidad = prop.get("value")
+            name = prop.get("name")
+            if name in dict_parameters.keys():
+                dict_parameters[name] = prop.get("value")
+        return dict_parameters
 
-        if not destino:
-            return self.format_response_for_bedrock(
-            action_group=self.event.action_group,
-            api_path=self.event.api_path,
-            http_method=self.event.http_method,
-            data={"error": "Para poder responderte necesito que me indiques el destino"},
-            session_attributes=self.event.session_attributes,
-            prompt_session_attributes=self.event.prompt_session_attributes,
-        )
+    def handle_buscar_operadores(self):
+        """Nueva herramienta para obtener información detallada de operadores"""
+        self.logger.info(f"[{self.event_id}] Ejecutando herramienta buscar_operadores")
+
+        dict_parameters = {
+            "destino": None,
+            "servicio": None,
+            "marca": None,
+            "categoria": None,
+            "modalidad": None,
+            "tipo_prestador": None,
+        }
+
+
+        dict_parameters = self._get_parameters(dict_parameters)
 
         stmt = select(
             TipsOperadores.operador,
@@ -525,7 +193,8 @@ class BedrockRequestHandler(RequestHandler):
             TipsOperadores.prioridad,
         )
 
-        if destino:
+        if dict_parameters["destino"] is not None:
+            destino = dict_parameters["destino"].lower()
             stmt = stmt.where(
                 or_(
                     func.f_unaccent(
@@ -540,37 +209,156 @@ class BedrockRequestHandler(RequestHandler):
                 )
             )
 
-        if servicio:
+        if dict_parameters["servicio"] is not None:
+            servicio = dict_parameters["servicio"].lower()
             stmt = stmt.where(
                 func.f_unaccent(
                     func.array_to_string(TipsOperadores.servicios, ", ")
                 ).ilike(f"%{servicio}%")
             )
 
-        if marca:
+        if dict_parameters["marca"] is not None:
+            marca = dict_parameters["marca"].lower()
             stmt = stmt.where(
                 func.f_unaccent(
                     TipsOperadores.prestador
                 ).ilike(f"%{marca}%")
             )
 
-        if categoria:
+        if dict_parameters["categoria"] is not None:
+            categoria = dict_parameters["categoria"].lower()
             stmt = stmt.where(
                 func.f_unaccent(
                     func.array_to_string(TipsOperadores.categoria, ", ")
                 ).ilike(f"%{categoria}%")
             )
 
-        if modalidad:
+        if dict_parameters["modalidad"] is not None:
+            modalidad = dict_parameters["modalidad"].lower()
             stmt = stmt.where(
                 func.f_unaccent(
                     func.array_to_string(TipsOperadores.tipo_servicio, ", ")
                 ).ilike(f"%{modalidad}%")
             )
 
+        if dict_parameters["tipo_prestador"] is not None:
+            tipo_prestador = dict_parameters["tipo_prestador"].lower()
+            stmt = stmt.where(
+                func.f_unaccent(
+                    func.array_to_string(TipsOperadores.tipo_prestador, ", ")
+                ).ilike(f"%{tipo_prestador}%")
+            )
+
         stmt = (
             stmt
             .order_by(TipsOperadores.prioridad.asc().nulls_last())
+            .limit(50)
+        )
+
+        with SessionLocal() as session:
+            results = session.execute(stmt).fetchall()
+            results = [dict(r._mapping) for r in results]
+
+        return self.format_response_for_bedrock(
+            action_group=self.event.action_group,
+            api_path=self.event.api_path,
+            http_method=self.event.http_method,
+            data=results,
+            session_attributes=self.event.session_attributes,
+            prompt_session_attributes=self.event.prompt_session_attributes,
+        )
+    
+    def handle_buscar_hoteles(self):
+        """Nueva herramienta para obtener información detallada de hoteles"""
+        self.logger.info(f"[{self.event_id}] Ejecutando herramienta buscar_hoteles")
+
+        dict_parameters = {
+            "destino": None,
+            "zona": None,
+            "hotel": None,
+            "estrellas": None,
+        }
+
+        dict_parameters = self._get_parameters(dict_parameters)
+
+        stmt = select(
+            HotelesRecomendados.region,
+            HotelesRecomendados.pais,
+            HotelesRecomendados.ciudad,
+            HotelesRecomendados.zona,
+            HotelesRecomendados.hotel,
+            HotelesRecomendados.categoria_estrellas,
+            HotelesRecomendados.nivel_recomendacion,
+            HotelesRecomendados.observaciones,
+        ).where(
+            HotelesRecomendados.activo.is_(True)
+        )
+
+        if dict_parameters["destino"] is not None:
+            destino = dict_parameters["destino"].lower()
+            stmt = stmt.where(
+                or_(
+                    func.f_unaccent(
+                        HotelesRecomendados.region
+                    ).ilike(
+                        func.concat("%", func.f_unaccent(destino), "%")
+                    ),
+                    func.f_unaccent(
+                        HotelesRecomendados.pais
+                    ).ilike(
+                        func.concat("%", func.f_unaccent(destino), "%")
+                    ),
+                    func.f_unaccent(
+                        HotelesRecomendados.ciudad
+                    ).ilike(
+                        func.concat("%", func.f_unaccent(destino), "%")
+                    ),
+                )
+            )
+
+        if dict_parameters["zona"] is not None:
+            zona = dict_parameters["zona"].lower()
+            stmt = stmt.where(
+                func.f_unaccent(
+                    HotelesRecomendados.zona
+                ).ilike(
+                    func.concat("%", func.f_unaccent(zona), "%")
+                )
+            )
+
+        if dict_parameters["hotel"] is not None:
+            hotel = dict_parameters["hotel"].lower()
+            stmt = stmt.where(
+                func.f_unaccent(
+                    HotelesRecomendados.hotel
+                ).ilike(
+                    func.concat("%", func.f_unaccent(hotel), "%")
+                )
+            )
+
+        if dict_parameters["estrellas"] is not None:
+            estrellas = dict_parameters["estrellas"]
+            m = re.search(r'\d', estrellas)
+            estrellas = int(m.group()) if m else None
+            
+            stmt = stmt.where(
+                HotelesRecomendados.categoria_estrellas >= estrellas
+            )
+
+        stmt = (
+            stmt
+            .order_by(
+                func.coalesce(
+                    HotelesRecomendados.nivel_recomendacion,
+                    0
+                ).desc(),
+                func.coalesce(
+                    HotelesRecomendados.categoria_estrellas,
+                    0
+                ).desc(),
+                HotelesRecomendados.ciudad,
+                HotelesRecomendados.hotel,
+            )
             .limit(50)
         )
 

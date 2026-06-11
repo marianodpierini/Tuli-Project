@@ -131,6 +131,24 @@ class TipsOperadores(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class HotelesRecomendados(Base):
+    __tablename__ = "hoteles_recomendados"
+    __table_args__ = {"schema": "turi"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    region = Column(Text)
+    pais = Column(Text, nullable=False)
+    ciudad = Column(Text, nullable=False)
+    zona = Column(Text)
+    hotel = Column(Text, nullable=False)
+    categoria_estrellas = Column(Integer)
+    nivel_recomendacion = Column(Integer)
+    observaciones = Column(Text)
+    activo = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class TableMetadata(Base):
     __tablename__ = "table_metadata"
     __table_args__ = {"schema": "catalog"}
