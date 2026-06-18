@@ -55,8 +55,8 @@ class BedrockRequestHandler(RequestHandler):
         self.routes = {
             "/stored_procedure": self.handle_stored_procedure,
             "/discover_tables": self.handle_discover_tables,
-            "/buscar_operadores": self.handle_buscar_operadores,
-            "/buscar_hoteles": self.handle_buscar_hoteles,
+            "/search_providers": self.handle_buscar_operadores,
+            "/search_lodging": self.handle_buscar_hoteles,
         }
 
     def format_response_for_bedrock(

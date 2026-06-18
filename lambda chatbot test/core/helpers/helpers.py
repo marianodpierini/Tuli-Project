@@ -249,25 +249,6 @@ def get_agents_mapping():
     return _cached_agents
 
 
-def get_agent_id(user_email: str):
-    # flag_doc_agent = os.environ["FLAG_DOC_AGENT"].lower() == "true"
-
-    # dict_data = get_agents_mapping()
-
-    # if flag_doc_agent:
-    #     return "RFPORJJMOR"
-
-    # user_email = user_email.strip().lower()
-
-    # for key, value in dict_data.items():
-    #     users = [u.strip().lower() for u in value]
-
-    #     if user_email in users:
-    #         return key
-
-    return "AHGTFH88AS"
-
-
 def cohere_embed(text: str, keywords: list, boto_config, input_type: str = "search_query") -> list[float]:
     client = boto3.client(
         "bedrock-runtime", region_name="us-east-1", config=boto_config

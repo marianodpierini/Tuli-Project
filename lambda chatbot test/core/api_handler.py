@@ -27,7 +27,6 @@ from core.helpers.helpers import (
     valite_existing_response,
     is_context_independent_heuristic,
     classify_with_bedrock,
-    get_agent_id,
     cohere_embed,
 )
 
@@ -66,6 +65,7 @@ KEYWORDS_USER_CONTEXT = [
     "personal" "objetivos",
 ]
 
+AGENT_ID = "AHGTFH88AS"
 
 LIMITE_TOKENS_DIARIO = 550000
 
@@ -267,10 +267,6 @@ class ApiRequestHandler(RequestHandler):
         ]
         return " ".join(tokens)
 
-    def is_message_valid(self, text):
-        prohibited_words = ["palabra_prohibida1", "palabra_prohibida2"]
-        return not any(word in text.lower() for word in prohibited_words)
-
     def save_user_question(self, question: str):
         now = datetime.now().isoformat()
         standardized_question = self.normalize_question(question)
@@ -320,36 +316,23 @@ class ApiRequestHandler(RequestHandler):
             "bedrock-agent-runtime", region_name="us-east-1", config=config
         )
 
-        agent_id = get_agent_id(self.user_context.user_email)
+        source = self.event.source
 
         # 1. Extrae el último mensaje
-        source = self.event.source
-        if "whatsapp" or "google_chat" in source:
-            last_message = conversation_history
-        else:
-            last_message = conversation_history[-1]["content"]
+        last_message = conversation_history
 
         # 2. Log para diagnosticar tamaño y snippet
         self.logger.info(
             f"[Bedrock] Mensaje final enviado (len={len(last_message)}): {repr(last_message)}"
         )
 
-        # 3. Inyecta datos de la BD si están disponibles
-        if db_data:
-            db_data = db_data[:800] + "..." if len(db_data) > 800 else db_data
-            last_message += f"\n\n[Datos de la Base de Datos]\n{db_data}"
-
         # 4. Control de tamaño máximo - CAMBIO: Truncamos a 256 caracteres
         last_message = last_message[:256] if len(last_message) > 256 else last_message
 
         # 5. Normalización y validación del mensaje
         last_message = self.clean_input_text(self.normalize_text(last_message))
-        if not self.is_message_valid(last_message):
-            return "Mensaje contiene contenido no permitido.", None
 
         input_to_metrics = last_message
-
-        self.save_user_question(last_message)
 
         # 6. Obtiene session_id o genera uno nuevo
         self.logger.info(f"sessionId enviado a Bedrock: {session_id}")
@@ -359,64 +342,6 @@ class ApiRequestHandler(RequestHandler):
         keywords_user = [
             kw for kw in last_message.split() if kw.lower() in KEYWORDS_USER_CONTEXT
         ]
-
-        keywords_cache = [
-            kw.lower() for kw in last_message.split() if kw.lower() not in STOP_WORDS
-        ]
-
-        new_q_id = None
-
-        if agent_id == "XKJTFFEMPC":
-
-            validation = valite_existing_response(
-                session_id, keywords_cache, last_message, config
-            )
-
-            if validation:
-                if validation == "Pregunta sin query":
-                    self.logger.info("La pregunta no tiene una query asociada.")
-                else:
-                    assistant_response = ""
-                    event_stream = validation.get("completion")
-
-                    if isinstance(event_stream, botocore.eventstream.EventStream):
-                        for event in event_stream:
-                            if "chunk" in event:
-                                chunk_data = event["chunk"]["bytes"].decode("utf-8")
-                                assistant_response += chunk_data
-
-                    self.logger.info(
-                        f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}"
-                    )
-                    return assistant_response.strip(), 0, 0, 0, input_to_metrics
-            else:
-                save_question = False
-
-                decision = is_context_independent_heuristic(last_message)
-
-                if decision is True:
-                    save_question = True
-                elif decision is None:
-                    response, total_tokens_llm = classify_with_bedrock(last_message)
-                    self.user_context.update_use_tokens(
-                        source, total_tokens=total_tokens_llm
-                    )
-                    if response:
-                        save_question = True
-
-                if save_question:
-                    with SessionLocal() as session:
-                        embedding = cohere_embed(last_message, keywords_cache, config, "search_document")
-                        new_q = SuggestedQuestions(
-                            nombre=last_message,
-                            activa=True,
-                            keywords=keywords_cache,
-                            embedding=embedding,
-                        )
-                        session.add(new_q)
-                        session.commit()
-
-                        new_q_id = new_q.id
 
         if len(keywords_user) >= 1:
             last_message += f"""
@@ -433,15 +358,10 @@ class ApiRequestHandler(RequestHandler):
 
         params = {
             "agentId": "DRSOAFDOTR",  # Reemplazá con tu agente real si hace falta
-            "agentAliasId": agent_id,  # Reemplazá si tenés otro alias
+            "agentAliasId": AGENT_ID,  # Reemplazá si tenés otro alias
             "sessionId": session_id,
             "inputText": last_message,
             "enableTrace": True,
-            "sessionState": {
-                "sessionAttributes": {
-                    "suggestion_id": str(new_q_id) if new_q_id else ""
-                }
-            },
         }
 
         try:
@@ -501,21 +421,7 @@ class ApiRequestHandler(RequestHandler):
             self.logger.info(
                 f"[AGENT RESPONSE] Respuesta del agente: {assistant_response.strip()}"
             )
-            agent_responses_feedback.put_item(
-                Item={
-                    "id_thread": self.event.body["space_name"],
-                    "last_update_time": datetime.now().isoformat(),
-                    "bot_response_text": assistant_response.strip(),
-                    "user_question_text": input_to_metrics,
-                    "user": self.event.body["email"],
-                    "agend_id": agent_id,
-                    "channel": source,
-                    "created_at": date.today().isoformat(),
-                    "expires_at": int(
-                        (datetime.now(timezone.utc) + timedelta(hours=24)).timestamp()
-                    ),
-                }
-            )
+
             return (
                 assistant_response.strip(),
                 total_ms,
@@ -527,14 +433,6 @@ class ApiRequestHandler(RequestHandler):
         except botocore.exceptions.ReadTimeoutError as e:
             self.logger.error(f"Timeout al invocar agente Bedrock: {str(e)}")
             return "El agente tardó demasiado en responder. Intente nuevamente."
-
-    def get_top_questions(limit: int = 3):
-        response = user_questions_table.scan(ProjectionExpression="question, count")
-        items = response.get("Items", [])
-
-        sorted_items = sorted(items, key=lambda x: x.get("count", 0), reverse=True)
-
-        return sorted_items[:limit]
 
     def get_active_suggestions(self, user_input: str):
         tokens = set(
@@ -570,53 +468,19 @@ class ApiRequestHandler(RequestHandler):
     def handle_event(self):
         try:
             start = time.perf_counter()
-            first_call = self.event.body.get("firstCall", None)
-            if first_call:
-                top_questions = self.get_top_questions()
-
-                return {
-                    "statusCode": 200,
-                    "headers": CORS_HEADERS,
-                    "body": json.dumps(
-                        {
-                            "suggestions": [
-                                {"question": s["question"], "count": s["count"]}
-                                for s in top_questions
-                            ],
-                            "sessionId": self.user_context.session_id,
-                        }
-                    ),
-                }
 
             source = self.event.source
             validate_tokens = self.user_context.validate_use_tokens(source)
-            if "whatsapp" in source:
-                self.send_whatsapp("Estoy pensando en tu consulta...")
+            if not validate_tokens:
+                self.send_google_chat_message(
+                    self.event.body["space_name"],
+                    "Alcanzaste el limite de tokens por el dia de hoy...",
+                )
+                return True
 
-                if not validate_tokens:
-                    self.send_whatsapp(
-                        "Alcanzaste el limite de tokens por el dia de hoy..."
-                    )
-                    return True
-
-                self.logger.info("[SOURCE] Evento recibido desde WhatsApp")
-                conversation_history = self.event.body["message"]
-                last_message = self.event.body["message"]
-            elif "google_chat" in source:
-                if not validate_tokens:
-                    self.send_google_chat_message(
-                        self.event.body["space_name"],
-                        "Alcanzaste el limite de tokens por el dia de hoy...",
-                    )
-                    return True
-
-                self.logger.info("[SOURCE] Evento recibido desde Google Chat")
-                conversation_history = self.event.body["text"]
-                last_message = self.event.body["text"]
-            else:
-                self.logger.info("[SOURCE] Evento recibido desde FrontEnd")
-                conversation_history = self.event.body.get("conversationHistory", [])
-                last_message = conversation_history[-1]["content"]
+            self.logger.info("[SOURCE] Evento recibido desde Google Chat")
+            conversation_history = self.event.body["text"]
+            last_message = self.event.body["text"]
 
             if not conversation_history:
                 return {
@@ -631,26 +495,31 @@ class ApiRequestHandler(RequestHandler):
                 )
             )
 
-            if "whatsapp" in source:
-                self.send_whatsapp(output_text)
-            elif "google_chat" in source:
-                output_text = output_text.replace("**", "*")
-                self.send_google_chat_message(
-                    self.event.body["space_name"], output_text
-                )
-            else:
-                return {
-                    "statusCode": 200,
-                    "headers": CORS_HEADERS,
-                    "body": json.dumps(
-                        {
-                            "outputText": output_text,
-                            "sessionId": self.user_context.session_id,
-                        }
-                    ),
-                }
+
+            output_text = output_text.replace("**", "*")
+            self.send_google_chat_message(
+                self.event.body["space_name"], output_text
+            )
 
             end = time.perf_counter()
+
+            self.save_user_question(last_message)
+
+            agent_responses_feedback.put_item(
+                Item={
+                    "id_thread": self.event.body["space_name"],
+                    "last_update_time": datetime.now().isoformat(),
+                    "bot_response_text": output_text,
+                    "user_question_text": input_to_metrics,
+                    "user": self.event.body["email"],
+                    "agend_id": AGENT_ID,
+                    "channel": source,
+                    "created_at": date.today().isoformat(),
+                    "expires_at": int(
+                        (datetime.now(timezone.utc) + timedelta(hours=24)).timestamp()
+                    ),
+                }
+            )
 
             total_ms_lambda = (end - start) * 1000
 
