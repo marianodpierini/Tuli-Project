@@ -2,7 +2,6 @@ from typing import List
 import os
 import json
 import boto3
-from urllib.parse import parse_qs
 from core.database.models import SuggestedQuestions
 from sqlalchemy import text, literal
 from decimal import Decimal
@@ -17,7 +16,6 @@ from typing import Optional
 s3 = boto3.client("s3")
 _cached_agents = None
 
-# Expresiones que indican dependencia fuerte de contexto
 CONTEXT_DEPENDENT_PATTERNS = [
     r"\b(eso|esa|esas|esos|aquello|aquellas|aquellos)\b",
     r"\b(lo anterior|lo mismo|lo de antes)\b",
@@ -26,14 +24,12 @@ CONTEXT_DEPENDENT_PATTERNS = [
     r"^(y|entonces|también)\b",
 ]
 
-# Verbos / estructuras típicas de preguntas standalone
 COMMON_VERB_PATTERNS = [
     r"\b(hubo|hay|había|serán|son|fueron|tiene|tienen)\b",
     r"\b(mostrar|listar|detallar|calcular)\b",
     r"\b(cuánt[oa]s?|total|promedio)\b",
 ]
 
-# Palabras clave del dominio (ajustá a tu negocio)
 DOMAIN_KEYWORDS_PATTERN = (
     r"\b(ventas|pasajeros|rentabilidad|ingresos|reservas|margen)\b"
 )
@@ -52,9 +48,9 @@ def normalize_decimals(obj):
 def normalize_event(event):
     enriched_event = event
     http_method = event.get("httpMethod", "")
-    path = event.get("path", "")
+    action_group = event.get("actionGroup", "")
 
-    if http_method == "POST":
+    if http_method == "POST" and action_group == "":
         headers = event.get("headers", {})
         body = event.get("body", {})
         body_json = json.loads(body)
@@ -73,8 +69,8 @@ def normalize_event(event):
         )
 
         enriched_event = {
-            "resource": "/webhooks/google-test",
-            "path": "/webhooks/google-test",
+            "resource": "/webhooks/google",
+            "path": "/webhooks/google",
             "httpMethod": "POST",
             "headers": headers,
             "requestContext": event.get("requestContext", {}),
@@ -103,7 +99,7 @@ def valite_existing_response(
         "bedrock-agent-runtime", region_name="us-east-1", config=boto_config
     )
 
-    query_embedding = titan_embed(user_input, keywords, boto_config)
+    query_embedding = cohere_embed(user_input, keywords, boto_config, "search_query")
 
     with SessionLocal() as session:
 
@@ -253,26 +249,7 @@ def get_agents_mapping():
     return _cached_agents
 
 
-def get_agent_id(user_email: str):
-    flag_doc_agent = os.environ["FLAG_DOC_AGENT"].lower() == "true"
-
-    dict_data = get_agents_mapping()
-
-    if flag_doc_agent:
-        return "RFPORJJMOR"
-
-    user_email = user_email.strip().lower()
-
-    for key, value in dict_data.items():
-        users = [u.strip().lower() for u in value]
-
-        if user_email in users:
-            return key
-
-    return "XKJTFFEMPC"
-
-
-def titan_embed(text: str, keywords: list, boto_config) -> list[float]:
+def cohere_embed(text: str, keywords: list, boto_config, input_type: str = "search_query") -> list[float]:
     client = boto3.client(
         "bedrock-runtime", region_name="us-east-1", config=boto_config
     )
@@ -285,10 +262,13 @@ def titan_embed(text: str, keywords: list, boto_config) -> list[float]:
     )
 
     response = client.invoke_model(
-        modelId="amazon.titan-embed-text-v2:0",
+        modelId="cohere.embed-multilingual-v3",
         contentType="application/json",
         accept="application/json",
-        body=json.dumps({"inputText": text_for_embedding}),
+        body=json.dumps({
+            "texts": [text_for_embedding],
+            "input_type": input_type,
+            })
     )
 
     body = json.loads(response["body"].read())

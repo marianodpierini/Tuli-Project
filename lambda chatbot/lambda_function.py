@@ -44,6 +44,7 @@ def get_params_bedrock(event):
         session_attributes=event.get("sessionAttributes"),
         prompt_session_attributes=event.get("promptSessionAttributes"),
         agent=event.get("agent"),
+        parameters=event.get("parameters"),
     )
 
 
@@ -63,12 +64,11 @@ def lambda_handler(event, context):
         logger.info("Lambda warmup event recibido, terminando ejecución.")
         return {"statusCode": 200, "body": "Lambda warmup successful"}
     
+    start_time = pytime.time()
+
     event_normalize = normalize_event(event)
     logger.info(f"EVENT: {json.dumps(event_normalize)}")
 
-    start_time = pytime.time()
-
-    # Obtener ID de request para seguimiento
     req_id = event_normalize.get("requestContext", {}).get(
         "requestId", context.aws_request_id
     )
@@ -96,7 +96,7 @@ def lambda_handler(event, context):
         else:
             logger.debug(f"[{req_id}] Evento tipo Bedrock detectado")
 
-            event = get_params_bedrock(event_normalize)
+            event = get_params_bedrock(event)
             handler = BedrockRequestHandler(logger, req_id, event, lambda_handler)
 
             return handler.handle_event()

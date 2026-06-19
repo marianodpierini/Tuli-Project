@@ -7,7 +7,7 @@ import boto3
 import time as pytime
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Union, Callable, Any
+from typing import Dict, List, Optional, Union, Callable, Any
 
 # from cachetools import TTLCache
 from logging import Logger
@@ -58,6 +58,7 @@ class BedrockEvent:
     session_attributes: Optional[Dict[str, str]]
     prompt_session_attributes: Optional[Dict[str, str]]
     agent: Optional[Dict[str, str]]
+    parameters: Optional[List[Dict[str, str]]]
 
 
 class RequestHandler:
