@@ -10,7 +10,20 @@ PROCESSING_LAMBDA_TEST = os.environ["PROCESSING_LAMBDA_TEST_NAME"]
 def lambda_handler(event, context):
     lambda_client = boto3.client("lambda")
 
+    if event.get("source", "") == "warmup":
+        event_data = json.dumps(event)
+        lambda_client.invoke(
+            FunctionName=PROCESSING_LAMBDA, InvocationType="Event", Payload=event_data
+        )
+
+        lambda_client.invoke(
+            FunctionName=PROCESSING_LAMBDA_TEST, InvocationType="Event", Payload=event_data
+        )
+
+        return True
+
     payload = json.dumps(event)
+
     lambda_name = (
         PROCESSING_LAMBDA_TEST
         if event.get("resource") == "/webhooks/google-test"

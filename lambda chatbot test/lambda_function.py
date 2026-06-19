@@ -60,6 +60,10 @@ def lambda_handler(event, context):
     """
     Lambda handler principal con sistema completo de logging por usuarios
     """
+    if event.get("source") == "warmup":
+        logger.info("Lambda warmup event recibido, terminando ejecución.")
+        return {"statusCode": 200, "body": "Lambda warmup successful"}
+    
     start_time = pytime.time()
 
     event_normalize = normalize_event(event)
