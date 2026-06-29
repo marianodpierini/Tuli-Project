@@ -387,6 +387,10 @@ class ApiRequestHandler(RequestHandler):
                             )
 
                     if "trace" in event:
+                        self.logger.info(
+                            "[BEDROCK TRACE] %s",
+                            json.dumps(event["trace"], cls=CustomJSONEncoder, ensure_ascii=False)
+                        )
                         trace_data = (
                             event["trace"]
                             .get("trace", {})
