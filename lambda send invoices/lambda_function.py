@@ -67,6 +67,10 @@ def lambda_handler(event, context):
                 "razon_social": iee.razon_social,
                 "moneda": iee.moneda,
                 "importe_total": iee.importe_total,
+                "tipo_comprobante": iee.tipo_comprobante,
+                "punto_venta": iee.punto_venta,
+                "numero_comprobante": iee.numero_comprobante,
+                "cotizacion": iee.cotizacion,
                 "estado_procesamiento": state,
                 "email_info": {
                     "remitente": sender,
@@ -82,6 +86,7 @@ def lambda_handler(event, context):
                         "id_servicio": s.id_servicio,
                         "id_reserva_aptour": s.id_reserva_aptour,
                         "id_reserva_mo": s.id_reserva_mo,
+                        "id_operador": s.id_operador,
                         "ya_facturado": s.ya_facturado
                     }
                     for s in iee.services

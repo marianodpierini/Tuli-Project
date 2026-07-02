@@ -3,15 +3,16 @@ from parser_helpers.parser_functions import PARSERS_DICT
 
 class InvoicesValidation:
     """Validates and enriches extracted invoice data by linking services and checking for existing invoices."""
-    def __init__(self, data_agent, operadores, conn_mysql):
+    def __init__(self, data_agent, operadores, conn_mysql, logger):
         self.data_agent = data_agent
         self.operadores = operadores
         self.operator_ids = [op["id"] for op in operadores]
         self.conn_mysql = conn_mysql
+        self.logger = logger
 
     def normalizar_codigo(self, codigo: str) -> str:
         if not codigo:
-            print("Código vacío, retornando sin normalizar.")
+            self.logger.info("Código vacío, retornando sin normalizar.")
             return codigo
 
         transformations = self.operadores[0].get("codigo_config", {}).get("transformations", [])
@@ -22,7 +23,7 @@ class InvoicesValidation:
             parser_fn = PARSERS_DICT.get(t_type)
 
             if not parser_fn:
-                print(f"Parser no soportado: {t_type}")
+                self.logger.warning(f"Parser no soportado: {t_type}")
                 continue
 
             codigo = parser_fn(codigo, t)
@@ -32,7 +33,7 @@ class InvoicesValidation:
     def buscar_servicios(self, codigos):
         """Searches for services in the database based on confirmation codes and operator IDs."""
         try:
-            print(f"Buscando servicios para códigos: {codigos} y operadores: {self.operator_ids}")
+            self.logger.info(f"Buscando servicios para códigos: {codigos} y operadores: {self.operator_ids}")
             with self.conn_mysql.cursor() as cursor:
                 placeholders_op = ",".join(["%s"] * len(self.operator_ids))
 
@@ -74,15 +75,15 @@ class InvoicesValidation:
                         if cod not in indice:
                             indice[cod] = row
                             
-                print(f"Servicios encontrados: {rows}")
+                self.logger.info(f"Servicios encontrados: {rows}")
                 return indice
 
         except Exception as e:
-            print(f"Error al buscar servicios: {e}")
+            self.logger.error(f"Error al buscar servicios: {e}")
             return {}
 
     def verificar_facturas(self, reserve_ids):
-        print(f"Verificando facturas para reservas: {reserve_ids}")
+        self.logger.info(f"Verificando facturas para reservas: {reserve_ids}")
         try:
             with self.conn_mysql.cursor() as cursor:
                 placeholders = ",".join(["%s"] * len(reserve_ids))
@@ -101,11 +102,11 @@ class InvoicesValidation:
                     result[row["reserve_id"]] = row["factura"]
 
                 
-                print(f"Facturas encontradas para reservas: {result}")
+                self.logger.info(f"Facturas encontradas para reservas: {result}")
                 return result
 
         except Exception as e:
-            print(f"Error al verificar facturas: {e}")
+            self.logger.error(f"Error al verificar facturas: {e}")
             return {}
 
     def vincular_servicios(self):
@@ -162,6 +163,7 @@ class InvoicesValidation:
             s["reserve_id"] = rid
             s["importeUSD"] = encontrado["balance"]
             s["id_reserva_mo"] = id_reserva_mo
+            s["operator_id"] = encontrado["operator_id"]
 
             if rid in facturas:
                 s["ya_facturado"] = True
@@ -176,5 +178,5 @@ class InvoicesValidation:
         
         self.data_agent["servicios"] = servicios
 
-        print(f"Servicios enriquecidos: {servicios_enriquecidos}")
+        self.logger.info(f"Servicios enriquecidos: {servicios_enriquecidos}")
         return self.data_agent, needs_retry

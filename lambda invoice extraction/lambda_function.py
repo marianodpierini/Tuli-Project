@@ -1,6 +1,8 @@
 import json
 import boto3
+import sys
 import os
+import logging
 import google.cloud.pubsub_v1 as pubsub_v1
 
 import base64
@@ -16,6 +18,14 @@ from googleapiclient.discovery import build
 from core.email_processor import EmailProcessor
 from database.db import SessionLocal
 
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    force=True,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 OPERADORES_BUCKET = os.environ.get("OPERADORES_BUCKET", "aero-turi-documents")
 OPERADORES_KEY = os.environ.get("OPERADORES_KEY", "lambda-files/operadores.json")
 KEY_SVS_ACC = os.environ.get("SVS_ACC", "lambda-files/key_account_serv.json")
@@ -27,12 +37,12 @@ class ConfigService:
         self.s3_client = s3_client
 
     def load_operators(self) -> Dict[str, Any]:
-        print(f"Cargando operadores desde s3://{OPERADORES_BUCKET}/{OPERADORES_KEY}")
+        logger.info(f"Cargando operadores desde s3://{OPERADORES_BUCKET}/{OPERADORES_KEY}")
         response = self.s3_client.get_object(Bucket=OPERADORES_BUCKET, Key=OPERADORES_KEY)
         return json.loads(response["Body"].read())
 
     def get_service_account_credentials(self) -> Dict[str, Any]:
-        print(f"Cargando credenciales de servicio desde s3://{OPERADORES_BUCKET}/{KEY_SVS_ACC}")
+        logger.info(f"Cargando credenciales de servicio desde s3://{OPERADORES_BUCKET}/{KEY_SVS_ACC}")
         response = self.s3_client.get_object(Bucket=OPERADORES_BUCKET, Key=KEY_SVS_ACC)
         content = response["Body"].read().decode("utf-8")
         return json.loads(content)
@@ -53,7 +63,7 @@ class GmailStateRepository:
             TableName=self.table_name_state,
             Item={"id": {"S": "global"}, "last_history_id": {"S": history_id}},
         )
-        print(f"History ID guardado: {history_id}")
+        logger.info(f"History ID guardado: {history_id}")
 
     def is_message_processed(self, message_id: str) -> bool:
         response = self.dynamodb_client.get_item(
@@ -65,7 +75,7 @@ class GmailStateRepository:
         self.dynamodb_client.put_item(
             TableName=self.table_name_processed, Item={"message_id": {"S": message_id}, "state": {"S": state}, "total_time_ms": {"N": str(total_time_ms)}, "total_tokens": {"N": str(total_tokens)}}
         )
-        print(f"Mensaje marcado como procesado: {message_id}")
+        logger.info(f"Mensaje marcado como procesado: {message_id}")
 
 
 class PubSubService:
@@ -75,7 +85,7 @@ class PubSubService:
         self.subscription_path = self.subscriber.subscription_path(project_id, subscription_name)
 
     def pull_messages(self, max_messages: int = 5) -> Tuple[List[Dict[str, Any]], str]:
-        print(f"Pulling messages from {self.subscription_path}...")
+        logger.info(f"Pulling messages from {self.subscription_path}...")
         response = self.subscriber.pull(
             request={"subscription": self.subscription_path, "max_messages": max_messages}
         )
@@ -85,12 +95,12 @@ class PubSubService:
                 data = json.loads(msg.message.data.decode("utf-8"))
                 messages.append({"data": data, "ack_id": msg.ack_id})
             except json.JSONDecodeError as e:
-                print(f"Error decoding Pub/Sub message: {e} - Data: {msg.message.data}")
+                logger.error(f"Error decoding Pub/Sub message: {e} - Data: {msg.message.data}")
         return messages, self.subscription_path
 
     def ack_messages(self, ack_ids: List[str]):
         if ack_ids:
-            print(f"Acknowledging {len(ack_ids)} messages.")
+            logger.info(f"Acknowledging {len(ack_ids)} messages.")
             self.subscriber.acknowledge(
                 request={"subscription": self.subscription_path, "ack_ids": ack_ids}
             )
@@ -116,7 +126,7 @@ class GmailService:
         )
 
         if creds.expired and creds.refresh_token:
-            print("Refreshing Gmail API credentials...")
+            logger.info("Refreshing Gmail API credentials...")
             creds.refresh(Request())
 
         return creds
@@ -129,7 +139,7 @@ class GmailService:
 
     def get_message_ids_from_history(self, start_history_id: str) -> Tuple[List[str], str | None]:
         service = self.get_service()
-        print(f"Fetching Gmail history from ID: {start_history_id}")
+        logger.info(f"Fetching Gmail history from ID: {start_history_id}")
         results = (
             service.users()
             .history()
@@ -147,7 +157,7 @@ class GmailService:
                 ids.append(m["message"]["id"])
 
         latest_history_id = results.get("historyId")
-        print(f"Found {len(ids)} new message IDs. Latest history ID: {latest_history_id}")
+        logger.info(f"Found {len(ids)} new message IDs. Latest history ID: {latest_history_id}")
         return ids, latest_history_id
 
     def get_raw_email(self, msg_id: str) -> bytes:
@@ -173,7 +183,7 @@ class InvoiceExtractionOrchestrator:
         last_history_id = self.state_repo.get_last_history_id()
 
         if not last_history_id:
-            print("Primer ejecución o historyId no encontrado. Guardando el más alto de los mensajes actuales y saliendo.")
+            logger.info("Primer ejecución o historyId no encontrado. Guardando el más alto de los mensajes actuales y saliendo.")
             if messages:
                 max_history_id = max([msg["data"]["historyId"] for msg in messages])
                 self.state_repo.save_history_id(str(max_history_id))
@@ -184,7 +194,7 @@ class InvoiceExtractionOrchestrator:
         message_ids, latest_gmail_history_id = self.gmail_service.get_message_ids_from_history(last_history_id)
 
         if not message_ids:
-            print("No hay nuevos emails en Gmail history.")
+            logger.info("No hay nuevos emails en Gmail history.")
             if latest_gmail_history_id:
                 self.state_repo.save_history_id(str(latest_gmail_history_id))
             ack_ids = [m["ack_id"] for m in messages]
@@ -193,7 +203,7 @@ class InvoiceExtractionOrchestrator:
 
         for msg_id in message_ids:
             if self.state_repo.is_message_processed(msg_id):
-                print(f"Mensaje ya procesado: {msg_id}")
+                logger.info(f"Mensaje ya procesado: {msg_id}")
                 continue
 
             self.state_repo.mark_message_processed(msg_id, "in progress")
@@ -203,13 +213,13 @@ class InvoiceExtractionOrchestrator:
                 parsed_msg = BytesParser(policy=policy.default).parsebytes(raw_email)
 
                 email_processor = EmailProcessor(
-                    parsed_msg, operadores, DEST_BUCKET, self.s3_client, self.db_session_factory, self.bedrock_client, msg_id
+                    parsed_msg, operadores, DEST_BUCKET, self.s3_client, self.db_session_factory, self.bedrock_client, msg_id, logger
                 )
                 total_time_email, total_tokens_email = email_processor.process_email()
 
                 self.state_repo.mark_message_processed(msg_id, "completed", total_time_email, total_tokens_email)
             except Exception as e:
-                print(f"Error processing message {msg_id}: {e}")
+                logger.error(f"Error processing message {msg_id}: {e}")
 
         if latest_gmail_history_id:
             self.state_repo.save_history_id(str(latest_gmail_history_id))
@@ -232,7 +242,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         messages, subscription_path = pubsub_service.pull_messages()
 
         if not messages:
-            print("No hay mensajes nuevos de Pub/Sub.")
+            logger.info("No hay mensajes nuevos de Pub/Sub.")
             return {"statusCode": 200, "body": "No new messages to process."}
 
         state_repo = GmailStateRepository(dynamodb_client)
@@ -248,7 +258,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return {"statusCode": 200, "body": "Procesado correctamente"}
 
     except Exception as e:
-        print(f"ERROR en lambda_handler: {e}")
+        logger.error(f"ERROR en lambda_handler: {e}")
         import traceback
         traceback.print_exc()
         raise e
