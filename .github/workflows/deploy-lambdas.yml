@@ -112,3 +112,81 @@ jobs:
           aws lambda update-function-code \
             --function-name OrquestLambda \
             --zip-file fileb://lambda\ orquest/orquest_lambda.zip
+
+  deploy-invoice-api:
+    name: Deploy invoice api Lambda
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Empaquetar invoice api Lambda
+        run: |
+          cd "lambda invoice api"
+          zip -r invoice_api_lambda.zip .
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Subir invoice api Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name LambdaInvoicesApi \
+            --zip-file fileb://lambda\ invoice\ api/invoice_api_lambda.zip
+
+  deploy-invoice-extraction:
+    name: Deploy invoice extraction Lambda
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Empaquetar invoice extraction Lambda
+        run: |
+          cd "lambda invoice extraction"
+          zip -r invoice_extraction_lambda.zip .
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Subir invoice extraction Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name InvoiceExtractionLambda \
+            --zip-file fileb://lambda\ invoice\ extraction/invoice_extraction_lambda.zip
+
+  deploy-watch-activate:
+    name: Deploy watch activate Lambda
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Empaquetar watch activate Lambda
+        run: |
+          cd "watch activate lambda"
+          zip -r watch_activate_lambda.zip .
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Subir watch activate Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name WatchActivateLambda \
+            --zip-file fileb://watch\ activate\ lambda/watch_activate_lambda.zip
