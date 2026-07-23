@@ -162,6 +162,7 @@ class InvoicesValidation:
             s["importeUSD"] = encontrado["balance"]
             s["id_reserva_mo"] = id_reserva_mo
             s["operator_id"] = encontrado["operator_id"]
+            s["voucher"] = codigo
 
             if rid in facturas:
                 s["ya_facturado"] = True

@@ -200,11 +200,6 @@ class EmailProcessor:
         self.s3_manager = S3AttachmentManager(s3_client, s3_bucket_destino, msg_id, logger)
         self.logger = logger
 
-    def normalizar_codigo(self, codigo: str) -> str:
-        if codigo.startswith("540"):
-            return codigo[3:]
-        return codigo
-
     def _buscar_operador_por_cuit(self, cuit: str) -> Optional[List[Dict[str, Any]]]:
         """Busca operadores por CUIT."""
         for cuit_ops, operadores in self.operadores["operadores_by_cuit"].items():
@@ -404,7 +399,7 @@ class EmailProcessor:
 
                 for servicio in servicios_pdf:
                     service = ServicesExtractedEmails(
-                        codigo=self.normalizar_codigo(servicio.get("voucher")),
+                        codigo=servicio.get("voucher"),
                         pasajero=servicio.get("nombre_del_viajero"),
                         importe=servicio.get("importe"),
                         vinculado=servicio.get("vinculado"),

@@ -156,11 +156,6 @@ class ReprocessInvoice:
         extraction_response_text = self._invoke_bedrock_model(extraction_content, model_id)
 
         return self.json_parser.safe_json_load(extraction_response_text)
-
-    def normalizar_codigo(self, codigo: str) -> str:
-        if codigo.startswith("540"):
-            return codigo[3:]
-        return codigo
     
     def map_data(self, data_agent: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -181,7 +176,7 @@ class ReprocessInvoice:
 
         for service in data_agent.get("servicios", []):
             service_mapped = {
-                "codigo": self.normalizar_codigo(service.get("voucher")),
+                "codigo": service.get("voucher"),
                 "pasajero": service.get("nombre_del_viajero"),
                 "importe": service.get("importe"),
                 "vinculado": service.get("vinculado"),

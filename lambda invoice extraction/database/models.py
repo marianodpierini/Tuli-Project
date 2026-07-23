@@ -4,6 +4,7 @@ from sqlalchemy import (
     Column,
     Text,
     DateTime,
+    Date,
     Integer,
     func,
     Numeric,
@@ -37,14 +38,14 @@ class InvoicesExtractedEmails(Base):
     ids_operadores = Column(ARRAY(Integer))
     s3_key = Column(Text)
     numero_factura = Column(Text)
-    fecha_factura = Column(Text)
+    fecha_factura = Column(Date)
     razon_social = Column(Text)
     moneda = Column(Text)
     importe_total = Column(Numeric(precision=12, scale=2))
     tipo_comprobante = Column(Text)
     punto_venta = Column(Text)
     numero_comprobante = Column(Text)
-    cotizacion = Column(Text)
+    cotizacion = Column(Numeric(precision=12, scale=4))
     case_id = Column(UUID(as_uuid=True), ForeignKey("facturas_bot.invoice_cases.case_id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
