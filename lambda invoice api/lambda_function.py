@@ -71,7 +71,7 @@ def lambda_handler(event, context):
 
         request_handler = RequestHandler(event, logger)
 
-        if resource == "/invoices/send_invoices" and method == "GET":
+        if resource == "/invoices/send_invoices/{estado}" and method == "GET":
             return _with_cors(request_handler.handle_send_invoices())
         if resource == "/invoices/update_invoice/{id_factura}" and method == "PATCH":
             return _with_cors(request_handler.handle_update_invoice())
@@ -81,7 +81,7 @@ def lambda_handler(event, context):
             return _with_cors(request_handler.handle_reprocess_invoice())
 
         known_resources = {
-            "/invoices/send_invoices": {"GET"},
+            "/invoices/send_invoices/{estado}": {"GET"},
             "/invoices/update_invoice/{id_factura}": {"PATCH"},
             "/invoices/see_invoice/{id_factura}/pdf": {"GET"},
             "/invoices/reprocess_invoice/{id_factura}": {"GET"},

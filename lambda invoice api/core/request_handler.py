@@ -3,6 +3,7 @@ import boto3
 import os
 from decimal import Decimal
 
+from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 from database.db import SessionLocal
 from database.models import (
@@ -37,6 +38,44 @@ class RequestHandler:
         self.logger = logger
 
     def handle_send_invoices(self):
+        estado = self.event.get("pathParameters", {}).get("estado", "LISTO PARA CARGAR")
+        query_params = self.event.get("queryStringParameters") or {}
+        page_param = query_params.get("page")
+        limit_param = query_params.get("limit")
+        use_pagination = page_param is not None or limit_param is not None
+
+        page = None
+        limit = None
+        offset = None
+
+        if use_pagination:
+            try:
+                page = int(page_param) if page_param is not None else 1
+                limit = int(limit_param) if limit_param is not None else 50
+            except (TypeError, ValueError):
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {
+                            "error": "Parametros de paginacion invalidos",
+                            "details": "page y limit deben ser numeros enteros",
+                        }
+                    ),
+                }
+
+            if page < 1 or limit < 1:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {
+                            "error": "Parametros de paginacion invalidos",
+                            "details": "page y limit deben ser mayores o iguales a 1",
+                        }
+                    ),
+                }
+
+            limit = min(limit, 200)
+            offset = (page - 1) * limit
         session = SessionLocal()
 
         try:
@@ -53,10 +92,32 @@ class RequestHandler:
                 .join(
                     InvoiceTransitions, InvoiceCases.case_id == InvoiceTransitions.case_id
                 )
-                .filter(InvoiceCases.state == "LISTO PARA CARGAR")
+                .filter(InvoiceCases.state == estado)
                 .options(joinedload(InvoicesExtractedEmails.services))
                 .distinct(InvoicesExtractedEmails.id)
+                .order_by(InvoicesExtractedEmails.id.desc())
             )
+
+            total_items = None
+            total_pages = None
+
+            if use_pagination:
+                total_items = (
+                    session.query(func.count(func.distinct(InvoicesExtractedEmails.id)))
+                    .join(
+                        InvoiceCases,
+                        InvoicesExtractedEmails.case_id == InvoiceCases.case_id,
+                    )
+                    .join(
+                        InvoiceTransitions,
+                        InvoiceCases.case_id == InvoiceTransitions.case_id,
+                    )
+                    .filter(InvoiceCases.state == estado)
+                    .scalar()
+                ) or 0
+
+                total_pages = (total_items + limit - 1) // limit if total_items else 0
+                query = query.offset(offset).limit(limit)
 
             results = query.all()
             items = []
@@ -97,10 +158,21 @@ class RequestHandler:
                 }
                 items.append(invoice_item)
 
+            response_body = {"items": items}
+            if use_pagination:
+                response_body["pagination"] = {
+                    "page": page,
+                    "limit": limit,
+                    "total_items": total_items,
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_previous": page > 1,
+                }
+
             return {
                 "statusCode": 200,
                 "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({"items": items}, cls=CustomJSONEncoder),
+                "body": json.dumps(response_body, cls=CustomJSONEncoder),
             }
 
         except Exception as e:
