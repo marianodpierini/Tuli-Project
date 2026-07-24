@@ -2,6 +2,7 @@ import json
 import boto3
 import os
 from decimal import Decimal
+from urllib.parse import unquote_plus
 
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
@@ -38,7 +39,10 @@ class RequestHandler:
         self.logger = logger
 
     def handle_send_invoices(self):
-        estado = self.event.get("pathParameters", {}).get("estado", "LISTO PARA CARGAR")
+        raw_estado = self.event.get("pathParameters", {}).get(
+            "estado", "LISTO PARA CARGAR"
+        )
+        estado = unquote_plus(raw_estado).strip() if raw_estado else "LISTO PARA CARGAR"
         query_params = self.event.get("queryStringParameters") or {}
         page_param = query_params.get("page")
         limit_param = query_params.get("limit")
@@ -322,7 +326,7 @@ class RequestHandler:
             return {
                 "statusCode": 500,
                 "body": json.dumps(
-                    {"error": "Error obteniendo PDF de la factura", "details": str(e)}
+                    {"error": "Error obteniendo PDF de la factura"}
                 ),
             }
         
