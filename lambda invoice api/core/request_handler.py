@@ -42,7 +42,7 @@ class RequestHandler:
         raw_estado = self.event.get("pathParameters", {}).get(
             "estado", "LISTO PARA CARGAR"
         )
-        estado = unquote_plus(raw_estado).strip() if raw_estado else "LISTO PARA CARGAR"
+        estado = unquote_plus(raw_estado).strip() if raw_estado else "LISTO_PARA_CARGAR"
         query_params = self.event.get("queryStringParameters") or {}
         page_param = query_params.get("page")
         limit_param = query_params.get("limit")
