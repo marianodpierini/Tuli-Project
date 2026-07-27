@@ -21,6 +21,8 @@ s3_client = boto3.client("s3")
 BUCKET_NAME = os.getenv("PDF_BUCKET", "PDF_BUCKET")
 OPERADORES_KEY = os.environ.get("OPERADORES_KEY", "lambda-files/operadores.json")
 
+LIST_STATES = ["RECIBIDO", "LISTO_PARA_CARGAR", "LOADED_BY_IT", "LOAD_FAILED", "DUPLICADO", "DESCARTADO", "EN_REVISION", "RECHAZADA", "ERROR"]
+
 
 class CustomJSONEncoder(json.JSONEncoder):
     """Codificador para manejar tipos Decimal y objetos de fecha en el JSON."""
@@ -91,10 +93,14 @@ class RequestHandler:
                     IncomingEmails.received_at,
                     IncomingEmails.subject,
                 )
-                .join(InvoiceCases, InvoicesExtractedEmails.case_id == InvoiceCases.case_id)
+                .join(
+                    InvoiceCases,
+                    InvoicesExtractedEmails.case_id == InvoiceCases.case_id,
+                )
                 .join(IncomingEmails, IncomingEmails.email_id == InvoiceCases.email_id)
                 .join(
-                    InvoiceTransitions, InvoiceCases.case_id == InvoiceTransitions.case_id
+                    InvoiceTransitions,
+                    InvoiceCases.case_id == InvoiceTransitions.case_id,
                 )
                 .filter(InvoiceCases.state == estado)
                 .options(joinedload(InvoicesExtractedEmails.services))
@@ -130,35 +136,38 @@ class RequestHandler:
                 invoice_item = {
                     "id_factura": iee.id,
                     "cuit": iee.cuit,
-                    "numero_factura": iee.numero_factura,
-                    "fecha_factura": iee.fecha_factura,
-                    "razon_social": iee.razon_social,
-                    "moneda": iee.moneda,
-                    "importe_total": iee.importe_total,
+                    "operador": {
+                        "id_operador": (
+                            iee.ids_operadores[0] if iee.ids_operadores else None
+                        ),
+                        "razon_social": iee.razon_social,
+                    },
                     "tipo_comprobante": iee.tipo_comprobante,
+                    "numero_factura": iee.numero_factura,
                     "punto_venta": iee.punto_venta,
                     "numero_comprobante": iee.numero_comprobante,
+                    "fecha_factura": iee.fecha_factura,
+                    "moneda": iee.moneda,
                     "cotizacion": iee.cotizacion,
-                    "estado_procesamiento": state,
-                    "email_info": {
-                        "remitente": sender,
-                        "asunto": subject,
-                        "fecha_recepcion": received_at,
+                    "importe_total": iee.importe_total,
+                    "desglose_impositivo": {
+                        "moneda": "USD",
+                        "exento": 0,
+                        "no_computable": 0,
+                        "gravado_21": 0,
+                        "gravado_105": 0,
+                        "percepcion_iva": 0,
+                        "percepciones_iibb": [
+                            {"provincia": "Buenos Aires", "monto": 0.25}
+                        ],
                     },
-                    "servicios": [
+                    "reservas": [
                         {
-                            "codigo": s.codigo,
-                            "pasajero": s.pasajero,
-                            "importe": s.importe,
-                            "vinculado": s.vinculado,
-                            "id_servicio": s.id_servicio,
-                            "id_reserva_aptour": s.id_reserva_aptour,
-                            "id_reserva_mo": s.id_reserva_mo,
-                            "id_operador": s.id_operador,
-                            "ya_facturado": s.ya_facturado,
+                            "id_reserva_mo": service.id_reserva_mo,
+                            "importe": service.importe,
                         }
-                        for s in iee.services
-                    ],
+                        for service in iee.services
+                    ]
                 }
                 items.append(invoice_item)
 
@@ -189,13 +198,25 @@ class RequestHandler:
             }
         finally:
             session.close()
-    
+
     def handle_update_invoice(self):
         invoice_id = self.event.get("pathParameters", {}).get("id_factura")
         body = json.loads(self.event.get("body", "{}"))
         state = body.get("state")
         operator_id = body.get("operator_id")
         service_updates = body.get("services", [])
+        reason_change = body.get("reason", "")
+
+        if state not in LIST_STATES:
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Estado inválido",
+                        "details": f"El estado '{state}' no es válido. Estados válidos: {LIST_STATES}",
+                    }
+                ),
+            }
 
         if state is None and operator_id is None and not service_updates:
             return {
@@ -210,7 +231,9 @@ class RequestHandler:
 
         with SessionLocal() as session:
             try:
-                query_get_invoice = session.query(InvoicesExtractedEmails).filter_by(id=invoice_id)
+                query_get_invoice = session.query(InvoicesExtractedEmails).filter_by(
+                    id=invoice_id
+                )
                 invoice = query_get_invoice.first()
 
                 if not invoice:
@@ -219,26 +242,46 @@ class RequestHandler:
                         "body": json.dumps({"error": "Factura no encontrada"}),
                     }
 
-                invoice_case = session.query(InvoiceCases).filter_by(case_id=invoice.case_id).first()
+                invoice_case = (
+                    session.query(InvoiceCases)
+                    .filter_by(case_id=invoice.case_id)
+                    .first()
+                )
                 if not invoice_case:
                     return {
                         "statusCode": 404,
                         "body": json.dumps({"error": "Caso de factura no encontrado"}),
                     }
-                
+
                 if state is not None:
                     invoice_case.state = state
+                    old_state = None
 
-                    invoice_transition = session.query(InvoiceTransitions).filter_by(case_id=invoice_case.case_id).first()
+                    invoice_transition = (
+                        session.query(InvoiceTransitions)
+                        .filter_by(case_id=invoice_case.case_id)
+                        .first()
+                    )
                     if invoice_transition:
-                        invoice_transition.from_state = invoice_transition.to_state
-                        invoice_transition.to_state = state
+                        old_state = invoice_transition.to_state
+
+                    invoice_transition = InvoiceTransitions(
+                        case_id=invoice_case.case_id,
+                        from_state=old_state,
+                        to_state=state,
+                        reason=reason_change,
+                        actor="Frontend API",
+                    )
+                    session.add(invoice_transition)
 
                 if operator_id is not None:
                     invoice.ids_operadores = [operator_id]
-                    service_invoice = session.query(ServicesExtractedEmails).filter_by(invoice_id=invoice.id).first()
+                    service_invoice = (
+                        session.query(ServicesExtractedEmails)
+                        .filter_by(invoice_id=invoice.id)
+                        .first()
+                    )
                     service_invoice.id_operador = operator_id
-                    
 
                 updated_services = 0
                 if service_updates:
@@ -258,7 +301,9 @@ class RequestHandler:
 
                         service.vinculado = True
                         service.id_servicio = service_data.get("id_servicio")
-                        service.id_reserva_aptour = service_data.get("id_reserva_aptour")
+                        service.id_reserva_aptour = service_data.get(
+                            "id_reserva_aptour"
+                        )
                         service.id_reserva_mo = service_data.get("id_reserva_mo")
                         updated_services += 1
 
@@ -287,13 +332,15 @@ class RequestHandler:
                         {"error": "Error actualizando factura", "details": str(e)}
                     ),
                 }
-            
+
     def handle_get_pdf_invoice(self):
         try:
             invoice_id = self.event.get("pathParameters", {}).get("id_factura")
 
             with SessionLocal() as session:
-                query_get_invoice = session.query(InvoicesExtractedEmails).filter_by(id=invoice_id)
+                query_get_invoice = session.query(InvoicesExtractedEmails).filter_by(
+                    id=invoice_id
+                )
                 invoice = query_get_invoice.first()
 
                 if not invoice:
@@ -301,7 +348,7 @@ class RequestHandler:
                         "statusCode": 404,
                         "body": json.dumps({"error": "Factura no encontrada"}),
                     }
-                
+
             s3_key = invoice.s3_key
 
             url = s3_client.generate_presigned_url(
@@ -315,27 +362,27 @@ class RequestHandler:
 
             print(url)
 
-            return {
-                "statusCode": 200,
-                "body": json.dumps({
-                    "pdf_url": url
-                })
-            }
+            return {"statusCode": 200, "body": json.dumps({"pdf_url": url})}
         except Exception as e:
             self.logger.error(f"Error obteniendo PDF de la factura: {e}")
             return {
                 "statusCode": 500,
-                "body": json.dumps(
-                    {"error": "Error obteniendo PDF de la factura"}
-                ),
+                "body": json.dumps({"error": "Error obteniendo PDF de la factura"}),
             }
-        
+
     def handle_reprocess_invoice(self):
         try:
 
             invoice_id = self.event.get("pathParameters", {}).get("id_factura")
 
-            reprocess_invoice = ReprocessInvoice(invoice_id, s3_client, self.logger, SessionLocal, BUCKET_NAME, OPERADORES_KEY)
+            reprocess_invoice = ReprocessInvoice(
+                invoice_id,
+                s3_client,
+                self.logger,
+                SessionLocal,
+                BUCKET_NAME,
+                OPERADORES_KEY,
+            )
             return reprocess_invoice.reprocess()
 
         except Exception as e:
@@ -346,7 +393,3 @@ class RequestHandler:
                     {"error": "Error reprocessing invoice", "details": str(e)}
                 ),
             }
-        
-
-
-        

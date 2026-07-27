@@ -40,6 +40,11 @@ class FacturasState(str, Enum):
     RECHAZADA = "RECHAZADA"
     ERROR = "ERROR"
 
+class StateReason(str, Enum):
+    CUIT_NO_IDENTIFICADO = "CUIT_NO_IDENTIFICADO"
+    OPERADOR_NO_IDENTIFICADO = "OPERADOR_NO_IDENTIFICADO"
+    DISTRIBUCION_A_CONFIRMAR = "DISTRIBUCION_A_CONFIRMAR"
+
 
 class JsonParser:
     """Utility for robust JSON parsing."""
@@ -306,7 +311,7 @@ class EmailProcessor:
                         operator_cuit=cuit if cuit else None,
                         operator_id=None,
                         state=FacturasState.EN_REVISION,
-                        state_reason="CUIT NO IDENTIFICADO",
+                        state_reason=StateReason.CUIT_NO_IDENTIFICADO,
                         extraction_method="Bedrock"
                     )
                     with self.db_session() as session:
@@ -327,7 +332,7 @@ class EmailProcessor:
                         operator_cuit=cuit if cuit else None,
                         operator_id=None,
                         state=FacturasState.EN_REVISION,
-                        state_reason="OPERADOR NO IDENTIFICADO",
+                        state_reason=StateReason.OPERADOR_NO_IDENTIFICADO,
                         extraction_method="Bedrock"
                     )
                     with self.db_session() as session:
