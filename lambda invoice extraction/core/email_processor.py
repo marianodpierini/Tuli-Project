@@ -3,11 +3,12 @@ import base64
 import re
 import hashlib
 import time
+import unicodedata
 from typing import Dict, Any, List, Optional, Tuple
 from enum import Enum
 
 from pdf2image import convert_from_bytes
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from io import BytesIO
 
 from database.models import InvoicesExtractedEmails, ServicesExtractedEmails, IncomingEmails, InvoiceCases, InvoiceTransitions
@@ -39,6 +40,7 @@ class FacturasState(str, Enum):
     EN_REVISION = "EN_REVISION"
     RECHAZADA = "RECHAZADA"
     ERROR = "ERROR"
+    YA_FACTURADO = "YA_FACTURADO"
 
 class StateReason(str, Enum):
     CUIT_NO_IDENTIFICADO = "CUIT_NO_IDENTIFICADO"
@@ -205,6 +207,32 @@ class EmailProcessor:
         self.s3_manager = S3AttachmentManager(s3_client, s3_bucket_destino, msg_id, logger)
         self.logger = logger
 
+    def get_date(self, invoice_date) -> str:
+        if isinstance(invoice_date, datetime) or isinstance(invoice_date, date):
+            return invoice_date.isoformat()
+        if isinstance(invoice_date, str):
+            return invoice_date
+
+    def _normalize_text_encoding(self, value: Optional[str]) -> Optional[str]:
+        """Normaliza Unicode y corrige mojibake UTF-8/latin-1 cuando aplica."""
+        if value is None:
+            return None
+
+        if not isinstance(value, str):
+            value = str(value)
+
+        normalized = unicodedata.normalize("NFC", value)
+
+        # Repara casos comunes como "PeÃ±a" -> "Peña" sin alterar texto ya correcto.
+        if any(marker in normalized for marker in ("Ã", "Â", "Ð", "�")):
+            try:
+                repaired = normalized.encode("latin-1").decode("utf-8")
+                normalized = unicodedata.normalize("NFC", repaired)
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+
+        return normalized.strip()
+
     def _buscar_operador_por_cuit(self, cuit: str) -> Optional[List[Dict[str, Any]]]:
         """Busca operadores por CUIT."""
         for cuit_ops, operadores in self.operadores["operadores_by_cuit"].items():
@@ -365,11 +393,16 @@ class EmailProcessor:
                         data_agent, needs_retry = invoice_validator.vincular_servicios()
 
                 old_state = invoice_case.state
-                state_invoice = (
-                    FacturasState.EN_REVISION
-                    if any(not s.get("vinculado") for s in data_agent.get("servicios", []))
-                    else FacturasState.LISTO_PARA_CARGAR
-                )
+                servicios = data_agent.get("servicios", [])
+                if any(not s.get("vinculado") for s in servicios):
+                    state_invoice = FacturasState.EN_REVISION
+                elif servicios and all(s.get("ya_facturado") for s in servicios):
+                    state_invoice = FacturasState.YA_FACTURADO
+                else:
+                    state_invoice = FacturasState.LISTO_PARA_CARGAR
+
+                if self.get_date(data_agent.get("fecha")) > date.today().isoformat():
+                    state_invoice = FacturasState.EN_REVISION
 
                 invoice_case.state = state_invoice
 
@@ -405,7 +438,7 @@ class EmailProcessor:
                 for servicio in servicios_pdf:
                     service = ServicesExtractedEmails(
                         codigo=servicio.get("voucher"),
-                        pasajero=servicio.get("nombre_del_viajero"),
+                        pasajero=self._normalize_text_encoding(servicio.get("nombre_del_viajero")),
                         importe=servicio.get("importe"),
                         vinculado=servicio.get("vinculado"),
                         id_servicio=servicio.get("service_id"),
