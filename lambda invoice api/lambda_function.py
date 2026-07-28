@@ -79,6 +79,10 @@ def lambda_handler(event, context):
             return _with_cors(request_handler.handle_get_pdf_invoice())
         if resource == "/invoices/reprocess_invoice/{id_factura}" and method == "GET":
             return _with_cors(request_handler.handle_reprocess_invoice())
+        if resource == "/invoices/{id_factura}" and method == "GET":
+            return _with_cors(request_handler.handle_get_invoice())
+        if resource == "/invoices/meta" and method == "GET":
+            return _with_cors(request_handler.handle_get_meta())
 
         known_resources = {
             "/invoices/send_invoices/{estado}": {"GET"},

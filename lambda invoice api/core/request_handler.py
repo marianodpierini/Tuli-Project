@@ -21,7 +21,17 @@ s3_client = boto3.client("s3")
 BUCKET_NAME = os.getenv("PDF_BUCKET", "PDF_BUCKET")
 OPERADORES_KEY = os.environ.get("OPERADORES_KEY", "lambda-files/operadores.json")
 
-LIST_STATES = ["RECIBIDO", "LISTO_PARA_CARGAR", "LOADED_BY_IT", "LOAD_FAILED", "DUPLICADO", "DESCARTADO", "EN_REVISION", "RECHAZADA", "ERROR"]
+LIST_STATES = [
+    "RECIBIDO",
+    "LISTO_PARA_CARGAR",
+    "LOADED_BY_IT",
+    "LOAD_FAILED",
+    "DUPLICADO",
+    "DESCARTADO",
+    "EN_REVISION",
+    "RECHAZADA",
+    "ERROR",
+]
 
 
 class CustomJSONEncoder(json.JSONEncoder):
@@ -167,7 +177,7 @@ class RequestHandler:
                             "importe": service.importe,
                         }
                         for service in iee.services
-                    ]
+                    ],
                 }
                 items.append(invoice_item)
 
@@ -393,3 +403,98 @@ class RequestHandler:
                     {"error": "Error reprocessing invoice", "details": str(e)}
                 ),
             }
+
+    def handle_get_invoice(self):
+        invoice_id = self.event.get("pathParameters", {}).get("id_factura")
+        session = SessionLocal()
+
+        try:
+            query = (
+                session.query(
+                    InvoicesExtractedEmails,
+                    InvoiceCases.state,
+                )
+                .join(
+                    InvoiceCases,
+                    InvoicesExtractedEmails.case_id == InvoiceCases.case_id,
+                )
+                .filter(InvoicesExtractedEmails.id == invoice_id)
+                .options(joinedload(InvoicesExtractedEmails.services))
+                .distinct(InvoicesExtractedEmails.id)
+            )
+
+            results = query.all()
+
+            for iee, state in results:
+                invoice_item = {
+                    "cuit": iee.cuit,
+                    "numero_factura": iee.numero_factura,
+                    "fecha_factura": iee.fecha_factura,
+                    "razon_social": iee.razon_social,
+                    "moneda": iee.moneda,
+                    "importe_total": iee.importe_total,
+                    "tipo_comprobante": iee.tipo_comprobante,
+                    "punto_venta": iee.punto_venta,
+                    "numero_comprobante": iee.numero_comprobante,
+                    "cotizacion": iee.cotizacion,
+                    "estado_procesamiento": state,
+                    "servicios": [
+                        {
+                            "codigo": s.codigo,
+                            "pasajero": s.pasajero,
+                            "importe": s.importe,
+                            "vinculado": s.vinculado,
+                            "id_servicio": s.id_servicio,
+                            "id_reserva_aptour": s.id_reserva_aptour,
+                            "id_reserva_mo": s.id_reserva_mo,
+                            "id_operador": s.id_operador,
+                            "ya_facturado": s.ya_facturado,
+                        }
+                        for s in iee.services
+                    ],
+                }
+
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"item": invoice_item}, cls=CustomJSONEncoder),
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error searching invoice: {e}")
+            return {
+                "statusCode": 500,
+                "body": json.dumps(
+                    {"error": "Error searching invoice", "details": str(e)}
+                ),
+            }
+
+    def handle_get_meta(self):
+        session = SessionLocal()
+        try:
+            rows = (
+                session.query(InvoiceCases.state, func.count(InvoiceCases.case_id))
+                .group_by(InvoiceCases.state)
+                .all()
+            )
+
+            state_counts = {state: 0 for state in LIST_STATES}
+            for state, count in rows:
+                if state in state_counts:
+                    state_counts[state] = count
+
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"states": state_counts}),
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting invoice metadata: {e}")
+            return {
+                "statusCode": 500,
+                "body": json.dumps(
+                    {"error": "Error getting invoice metadata", "details": str(e)}
+                ),
+            }
+        finally:
+            session.close()
