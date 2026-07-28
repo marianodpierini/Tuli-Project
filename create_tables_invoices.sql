@@ -76,6 +76,7 @@ CREATE TABLE facturas_bot.services_extracted_emails (
 	ya_facturado BOOLEAN DEFAULT FALSE,
 	factura TEXT,
 	pending BOOLEAN DEFAULT TRUE,
+	desc_neto NUMERIC(12,2),
 	created_at TIMESTAMP DEFAULT now()
 );
 

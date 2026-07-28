@@ -92,7 +92,7 @@ class ReprocessInvoice:
             body=json.dumps(
                 {
                     "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 1500,
+                    "max_tokens": 5000,
                     "temperature": 0,
                     "messages": [{"role": "user", "content": content}],
                 }
@@ -144,6 +144,7 @@ class ReprocessInvoice:
                 - voucher
                 - producto
                 - nombre_del_viajero
+                - desc (descuento)
                 - importe
             IMPORTANTE:
             - Respetar la estructura visual de la tabla
@@ -187,6 +188,7 @@ class ReprocessInvoice:
                 "ya_facturado": service.get("ya_facturado"),
                 "factura": service.get("factura"),
                 "pending": service.get("pending"),
+                "desc_neto": service.get("desc"),
                 "id_operador": service.get("operator_id")
             }
 
@@ -241,6 +243,7 @@ class ReprocessInvoice:
             "ya_facturado",
             "factura",
             "pending",
+            "desc_neto",
         ]
 
         changes = []

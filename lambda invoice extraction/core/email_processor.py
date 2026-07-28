@@ -88,7 +88,7 @@ class PdfBedrockExtractor:
             body=json.dumps(
                 {
                     "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 1500,
+                    "max_tokens": 5000,
                     "temperature": 0,
                     "messages": [{"role": "user", "content": content}],
                 }
@@ -143,6 +143,7 @@ class PdfBedrockExtractor:
                 - voucher
                 - producto
                 - nombre_del_viajero
+                - desc (descuento)
                 - importe
             IMPORTANTE:
             - Respetar la estructura visual de la tabla
@@ -448,6 +449,7 @@ class EmailProcessor:
                         ya_facturado=servicio.get("ya_facturado"),
                         factura=servicio.get("factura"),
                         pending=servicio.get("pending"),
+                        desc_neto=servicio.get("desc"),
                         id_operador=servicio.get("operator_id")
                     )
                     services.append(service)

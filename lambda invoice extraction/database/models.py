@@ -79,6 +79,7 @@ class ServicesExtractedEmails(Base):
     ya_facturado = Column(Boolean, default=False)
     factura = Column(Text)
     pending = Column(Boolean, default=True)
+    desc_neto = Column(Numeric(12, 2))
     created_at = Column(DateTime, server_default=func.now())
 
     invoice = relationship("InvoicesExtractedEmails", back_populates="services")

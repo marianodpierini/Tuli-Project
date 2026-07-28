@@ -286,12 +286,13 @@ class RequestHandler:
 
                 if operator_id is not None:
                     invoice.ids_operadores = [operator_id]
-                    service_invoice = (
+                    services_invoice = (
                         session.query(ServicesExtractedEmails)
                         .filter_by(invoice_id=invoice.id)
-                        .first()
+                        .all()
                     )
-                    service_invoice.id_operador = operator_id
+                    for service_invoice in services_invoice:
+                        service_invoice.id_operador = operator_id
 
                 updated_services = 0
                 if service_updates:
@@ -311,9 +312,6 @@ class RequestHandler:
 
                         service.vinculado = True
                         service.id_servicio = service_data.get("id_servicio")
-                        service.id_reserva_aptour = service_data.get(
-                            "id_reserva_aptour"
-                        )
                         service.id_reserva_mo = service_data.get("id_reserva_mo")
                         updated_services += 1
 

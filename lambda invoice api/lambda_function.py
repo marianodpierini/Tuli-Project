@@ -60,6 +60,7 @@ def _with_cors(response):
 
     return response
 
+
 def lambda_handler(event, context):
     try:
         logger.info(f"Received event: {json.dumps(event)}")
@@ -84,23 +85,15 @@ def lambda_handler(event, context):
         if resource == "/invoices/meta" and method == "GET":
             return _with_cors(request_handler.handle_get_meta())
 
-        known_resources = {
-            "/invoices/send_invoices/{estado}": {"GET"},
-            "/invoices/update_invoice/{id_factura}": {"PATCH"},
-            "/invoices/see_invoice/{id_factura}/pdf": {"GET"},
-            "/invoices/reprocess_invoice/{id_factura}": {"GET"},
-        }
-        if resource in known_resources:
-            return _response(
-                405,
-                {
-                    "error": "Method Not Allowed",
-                    "allowed_methods": sorted(list(known_resources[resource] | {"OPTIONS"})),
-                },
-            )
+        return _response(
+            405,
+            {
+                "error": "Method Not Allowed",
+            },
+        )
 
         return _response(404, {"error": "Not Found"})
-        
+
     except Exception as e:
         logger.error(f"Error processing request: {e}")
         return _response(500, {"error": "Internal server error"})
