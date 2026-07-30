@@ -11,13 +11,15 @@ from pdf2image import convert_from_bytes
 from datetime import datetime, timezone, date
 from io import BytesIO
 
-from database.models import InvoicesExtractedEmails, ServicesExtractedEmails, IncomingEmails, InvoiceCases, InvoiceTransitions
+from database.models import InvoicesExtractedEmails, ServicesExtractedEmails, IncomingEmails, InvoiceCases, InvoiceTransitions, PercepcionesIIBB
 from core.invoices_validation import InvoicesValidation
 from database.db_mysql import get_connection
 
 from sqlalchemy.exc import IntegrityError
 MODEL_DEFAULT = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 MODEL_POWERFUL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+TOLERANCIA = 0.05
 
 conn_mysql = get_connection()
 
@@ -44,8 +46,10 @@ class FacturasState(str, Enum):
 
 class StateReason(str, Enum):
     CUIT_NO_IDENTIFICADO = "CUIT_NO_IDENTIFICADO"
-    OPERADOR_NO_IDENTIFICADO = "OPERADOR_NO_IDENTIFICADO"
+    CUIT_DUDOSO = "CUIT_DUDOSO"
     DISTRIBUCION_A_CONFIRMAR = "DISTRIBUCION_A_CONFIRMAR"
+    DESGLOCE_NO_CUADRA = "DESGLOCE_NO_CUADRA"
+    REMITENTE_NO_COINCIDE = "REMITENTE_NO_COINCIDE"
 
 
 class JsonParser:
@@ -139,6 +143,15 @@ class PdfBedrockExtractor:
             - importe_total_final
             - tipo_comprobante (factura / nota de débito / nota de crédito)
             - cotizacion (si la moneda es distinta a ARS) (El texto donde aparece es este 'A efectos contables e impositivos el tipo de cambio de esta factura es  $ 1385')
+            - Subtotal (valor numerico decimal)
+            - Descuento (valor numerico decimal)
+            - Total sin I.V.A (valor numerico decimal)
+            - I.V.A 21% (valor numerico decimal)
+            - Percepcion IIBB (valor numerico decimal)
+            - No computable
+            - Gravado 21
+            - Gravado 105
+            - Percepcion I.V.A
             - servicios:
                 - voucher
                 - producto
@@ -224,7 +237,6 @@ class EmailProcessor:
 
         normalized = unicodedata.normalize("NFC", value)
 
-        # Repara casos comunes como "PeÃ±a" -> "Peña" sin alterar texto ya correcto.
         if any(marker in normalized for marker in ("Ã", "Â", "Ð", "�")):
             try:
                 repaired = normalized.encode("latin-1").decode("utf-8")
@@ -234,6 +246,28 @@ class EmailProcessor:
 
         return normalized.strip()
 
+    def validar_desglose(factura) -> tuple[bool, str | None]:
+        servicios = factura.get("servicios", [])
+        suma_importe = sum(s.get("importe") for s in servicios if s.get("importe") is not None)
+        suma_desc = sum(s.get("desc") for s in servicios if s.get("desc") is not None)
+
+        checks = [
+            ("SUBTOTAL_NO_CUADRA",
+            abs(suma_importe - factura["subtotal"]) > TOLERANCIA),
+            ("TOTAL_SIN_IVA_NO_CUADRA",
+            abs(suma_desc - factura["total_sin_iva"]) > TOLERANCIA),
+            ("TOTAL_NO_CUADRA",
+            abs(factura["total_sin_iva"]
+                + factura.get("percepcion_iibb", 0)
+                + factura.get("percepcion_iva", 0)
+                - factura.get("importe_total_final")) > TOLERANCIA),
+        ]
+
+        for motivo, falla in checks:
+            if falla:
+                return False, motivo
+        return True, None
+
     def _buscar_operador_por_cuit(self, cuit: str) -> Optional[List[Dict[str, Any]]]:
         """Busca operadores por CUIT."""
         for cuit_ops, operadores in self.operadores["operadores_by_cuit"].items():
@@ -241,9 +275,10 @@ class EmailProcessor:
             if cuit_limpio == cuit.replace("-", ""):
                 return operadores
             
+        for cuit_ops, operadores in self.operadores["operadores_by_cuit"].items():   
             if cuit_ops.split("-")[1] == cuit.split("-")[1]:
                 self.logger.info(f"Coincidencia parcial de CUIT encontrada: {cuit_ops} para CUIT {cuit}")
-                return operadores
+                return None
             
         return None
     
@@ -252,13 +287,9 @@ class EmailProcessor:
         cuit = self.operadores.get("cuit_by_sender", {}).get(sender)
         if cuit:
             self.logger.info(f"CUIT {cuit} encontrado para sender {sender}")
-            operadores = self._buscar_operador_por_cuit(cuit)
-            if operadores:
-                return cuit, operadores
-            self.logger.info(f"CUIT {cuit} encontrado para sender {sender}, pero no se encontraron operadores asociados.")
-            return None ,"-1"
+            return cuit
         self.logger.info(f"No se encontró CUIT para sender {sender}, se buscara por contenido de la factura.")
-        return None, "0"
+        return None
     
 
     def insert_email(self):
@@ -270,11 +301,7 @@ class EmailProcessor:
         state = EmailsState.RECIBIDO
         reason = None
 
-        data_by_sender = self._buscar_operador_por_sender(sender)
-
-        if data_by_sender[1] == "-1":
-            state = EmailsState.SIN_OPERADOR_ASOCIADO
-            reason = f"El remitente {sender} está asociado a un CUIT sin operadores válidos."
+        cuit_by_sender = self._buscar_operador_por_sender(sender)
 
         if attachment_count == 0:
             state = EmailsState.SIN_ADJUNTO
@@ -295,16 +322,32 @@ class EmailProcessor:
             session.add(email_record)
             session.commit()
 
-        return data_by_sender
+        return cuit_by_sender
 
     def process_email(self):
         start_time = time.perf_counter()
         total_tokens_email = 0
 
         try:
-            data_by_sender = self.insert_email()
+            cuit_by_sender = self.insert_email()
 
-            if data_by_sender[1] == "-1":
+            if not cuit_by_sender:
+                self.logger.info(f"No se encontró CUIT asociado al sender {self.msg.get('From')}.")
+                invoice_case = InvoiceCases(
+                    email=self.email_id,
+                    attachment_hash=None,
+                    attachment_name=None,
+                    operator_cuit=None,
+                    operator_id=None,
+                    state=FacturasState.EN_REVISION,
+                    state_reason=StateReason.REMITENTE_NO_COINCIDE,
+                    extraction_method="Bedrock"
+                )
+
+                with self.db_session() as session:
+                    session.add(invoice_case)
+                    session.commit()
+
                 return 0, 0
             
             attachments_data_for_db = []
@@ -330,7 +373,7 @@ class EmailProcessor:
                     self.logger.info(f"No se pudo extraer datos de la factura para {filename}, se ignora.")
                     continue
                 
-                cuit = data_by_sender[0] or data_agent.get("cuit")
+                cuit = cuit_by_sender or data_agent.get("cuit")
                 if not cuit:
                     self.logger.info(f"No se pudo extraer CUIT para {filename}, se ignora archivo.")
                     invoice_case = InvoiceCases(
@@ -348,8 +391,8 @@ class EmailProcessor:
                         session.commit()
                     continue
 
-                if data_by_sender[0] != data_agent.get("cuit"):
-                    self.logger.warning(f"CUIT extraído {data_agent.get('cuit')} no coincide con CUIT asociado al sender {data_by_sender[0]} para {filename}.")
+                if cuit_by_sender != data_agent.get("cuit"):
+                    self.logger.warning(f"CUIT extraído {data_agent.get('cuit')} no coincide con CUIT asociado al sender {cuit_by_sender} para {filename}.")
 
                 operadores = self._buscar_operador_por_cuit(cuit)
                 if not operadores:
@@ -361,7 +404,7 @@ class EmailProcessor:
                         operator_cuit=cuit if cuit else None,
                         operator_id=None,
                         state=FacturasState.EN_REVISION,
-                        state_reason=StateReason.OPERADOR_NO_IDENTIFICADO,
+                        state_reason=StateReason.CUIT_DUDOSO,
                         extraction_method="Bedrock"
                     )
                     with self.db_session() as session:
@@ -405,6 +448,10 @@ class EmailProcessor:
                 if self.get_date(data_agent.get("fecha")) > date.today().isoformat():
                     state_invoice = FacturasState.EN_REVISION
 
+                if self.validar_desglose(data_agent)[0] is False:
+                    state_invoice = FacturasState.EN_REVISION
+                    invoice_case.state_reason = StateReason.DESGLOCE_NO_CUADRA
+
                 invoice_case.state = state_invoice
 
                 invoice_transition_validation = InvoiceTransitions(
@@ -431,6 +478,15 @@ class EmailProcessor:
                     punto_venta=data_agent.get("numero_factura").split("-")[0],
                     numero_comprobante=data_agent.get("numero_factura").split("-")[1],
                     cotizacion=data_agent.get("cotizacion"),
+                    exento=data_agent.get("total_sin_iva"),
+                    no_computable=data_agent.get("no_computable"),
+                    gravado_21=data_agent.get("gravado_21"),
+                    gravado_105=data_agent.get("gravado_105"),
+                    percepcion_iva=data_agent.get("percepcion_iva"),
+                    subtotal_control=data_agent.get("subtotal"),
+                    descuento_control=data_agent.get("descuento"),
+                    total_sin_iva_control=data_agent.get("total_sin_iva"),
+                    total_control=data_agent.get("importe_total_final")
                 )
 
                 services = []
@@ -456,6 +512,13 @@ class EmailProcessor:
 
                 invoice_extracted.services = services
                 invoice_extracted.case = invoice_case
+
+                percepcion_record = PercepcionesIIBB(
+                    invoice=invoice_extracted,
+                    provincia="Buenos Aires",
+                    monto=data_agent.get("percepcion_iibb"),
+                )
+
                 attachments_data_for_db.append({
                     "filename": filename,
                     "s3_key": dest_key,
@@ -463,6 +526,7 @@ class EmailProcessor:
                         invoice_case,
                         invoice_transition_validation,
                         invoice_extracted,
+                        percepcion_record,
                         *services
                     ]
                 })

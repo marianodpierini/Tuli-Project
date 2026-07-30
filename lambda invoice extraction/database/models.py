@@ -46,12 +46,27 @@ class InvoicesExtractedEmails(Base):
     punto_venta = Column(Text)
     numero_comprobante = Column(Text)
     cotizacion = Column(Numeric(precision=12, scale=4))
+    exento = Column(Numeric(precision=12, scale=2))
+    no_computable = Column(Numeric(precision=12, scale=2))
+    gravado_21 = Column(Numeric(precision=12, scale=2))
+    gravado_105 = Column(Numeric(precision=12, scale=2))
+    percepcion_iva = Column(Numeric(precision=12, scale=2))
+    subtotal_control = Column(Numeric(precision=12, scale=2))
+    descuento_control = Column(Numeric(precision=12, scale=2))
+    total_sin_iva_control = Column(Numeric(precision=12, scale=2))
+    total_control = Column(Numeric(precision=12, scale=2))
     case_id = Column(UUID(as_uuid=True), ForeignKey("facturas_bot.invoice_cases.case_id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     services = relationship(
         "ServicesExtractedEmails",
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+    )
+
+    percepciones_iibb = relationship(
+        "PercepcionesIIBB",
         back_populates="invoice",
         cascade="all, delete-orphan",
     )
@@ -150,3 +165,18 @@ class InvoiceTransitions(Base):
     metadata_ = Column("metadata", JSON)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     case = relationship("InvoiceCases", back_populates="transitions")
+
+
+class PercepcionesIIBB(Base):
+    __tablename__ = "percepciones_iibb"
+    __table_args__ = {"schema": "facturas_bot"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    invoice_id = Column(
+        Integer, ForeignKey("facturas_bot.invoices_extracted_emails.id"), nullable=False
+    )
+    provincia = Column(Text)
+    monto = Column(Numeric(precision=12, scale=2))
+    created_at = Column(DateTime, server_default=func.now())
+
+    invoice = relationship("InvoicesExtractedEmails", back_populates="percepciones_iibb")

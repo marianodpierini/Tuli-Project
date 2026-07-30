@@ -140,6 +140,11 @@ class ReprocessInvoice:
             - importe_total_final
             - tipo_comprobante (factura / nota de débito / nota de crédito)
             - cotizacion (si la moneda es distinta a ARS) (El texto donde aparece es este 'A efectos contables e impositivos el tipo de cambio de esta factura es  $ 1385')
+            - Subtotal
+            - Descuento
+            - Total sin I.V.A
+            - I.V.A 21%
+            - Percepcion IIBB BS
             - servicios:
                 - voucher
                 - producto

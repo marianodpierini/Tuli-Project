@@ -2,6 +2,7 @@ import json
 import boto3
 
 from googleapiclient.discovery import build
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
@@ -13,6 +14,7 @@ secrets = boto3.client("secretsmanager")
 def get_secret():
     secret_data = secrets.get_secret_value(SecretId="gmail/token/facturas_bot")
     data = json.loads(secret_data["SecretString"])
+    print(data)
     return json.loads(data["token_facturas_bot"])
 
 
@@ -26,8 +28,15 @@ def build_credentials(data):
         scopes=SCOPES,
     )
 
-    if creds.expired and creds.refresh_token:
+    try:
         creds.refresh(Request())
+    except RefreshError as error:
+        raise RuntimeError(
+            "Google rechazo el refresh token guardado en "
+            "Secrets Manager (gmail/token/facturas_bot). "
+            "Vuelva a autorizar la cuenta de Gmail y reemplace token, "
+            "refresh_token, client_id y client_secret usando el mismo cliente OAuth."
+        ) from error
 
     return creds
 
