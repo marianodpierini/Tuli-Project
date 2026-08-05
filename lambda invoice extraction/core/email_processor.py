@@ -11,17 +11,23 @@ from pdf2image import convert_from_bytes
 from datetime import datetime, timezone, date
 from io import BytesIO
 
-from database.models import InvoicesExtractedEmails, ServicesExtractedEmails, IncomingEmails, InvoiceCases, InvoiceTransitions, PercepcionesIIBB
+from database.models import (
+    InvoicesExtractedEmails,
+    ServicesExtractedEmails,
+    IncomingEmails,
+    InvoiceCases,
+    InvoiceTransitions,
+    PercepcionesIIBB,
+)
 from core.invoices_validation import InvoicesValidation
 from database.db_mysql import get_connection
 
 from sqlalchemy.exc import IntegrityError
+
 MODEL_DEFAULT = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 MODEL_POWERFUL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 TOLERANCIA = 0.05
-
-conn_mysql = get_connection()
 
 
 class EmailsState(str, Enum):
@@ -31,6 +37,7 @@ class EmailsState(str, Enum):
     PROCESADO = "PROCESADO"
     ERROR = "ERROR"
     SIN_OPERADOR_ASOCIADO = "SIN_OPERADOR_ASOCIADO"
+
 
 class FacturasState(str, Enum):
     RECIBIDO = "RECIBIDO"
@@ -44,16 +51,20 @@ class FacturasState(str, Enum):
     ERROR = "ERROR"
     YA_FACTURADO = "YA_FACTURADO"
 
+
 class StateReason(str, Enum):
     CUIT_NO_IDENTIFICADO = "CUIT_NO_IDENTIFICADO"
     CUIT_DUDOSO = "CUIT_DUDOSO"
     DISTRIBUCION_A_CONFIRMAR = "DISTRIBUCION_A_CONFIRMAR"
     DESGLOCE_NO_CUADRA = "DESGLOCE_NO_CUADRA"
     REMITENTE_NO_COINCIDE = "REMITENTE_NO_COINCIDE"
+    EXTENSION_INVALIDA = "EXTENSION_INVALIDA"
+    FACTURA_DUPLICADA = "FACTURA_DUPLICADA"
 
 
 class JsonParser:
     """Utility for robust JSON parsing."""
+
     def safe_json_load(self, text: str) -> Optional[Dict[str, Any]]:
         try:
             return json.loads(text)
@@ -71,9 +82,11 @@ class JsonParser:
 
 class PdfBedrockExtractor:
     """Handles PDF to image conversion and extraction using Bedrock."""
-    def __init__(self, bedrock_client, json_parser: JsonParser):
+
+    def __init__(self, bedrock_client, logger, json_parser: JsonParser):
         self.bedrock_client = bedrock_client
         self.json_parser = json_parser
+        self.logger = logger
 
     def _pdf_to_base64_images(self, file_bytes: bytes) -> List[str]:
         """Converts PDF bytes to a list of base64 encoded PNG images."""
@@ -85,7 +98,9 @@ class PdfBedrockExtractor:
             base64_images.append(base64.b64encode(buffer.getvalue()).decode("utf-8"))
         return base64_images
 
-    def _invoke_bedrock_model(self, content: List[Dict[str, Any]], model_id: str) -> Tuple[str, int]:
+    def _invoke_bedrock_model(
+        self, content: List[Dict[str, Any]], model_id: str
+    ) -> Tuple[str, int]:
         """Invokes the Bedrock model with the given content and model ID."""
         response = self.bedrock_client.invoke_model(
             modelId=model_id,
@@ -105,7 +120,9 @@ class PdfBedrockExtractor:
         cleaned_text = text.replace("```json", "").replace("```", "").strip()
         return cleaned_text, tokens
 
-    def extract_invoice_data(self, file_bytes: bytes, model_id: str = MODEL_DEFAULT) -> Tuple[Optional[Dict[str, Any]], int]:
+    def extract_invoice_data(
+        self, file_bytes: bytes, model_id: str = MODEL_DEFAULT
+    ) -> Tuple[Optional[Dict[str, Any]], int]:
         """
         Extracts invoice data from PDF bytes using Bedrock.
         Performs a two-step process: validation (is it an invoice?) and then data extraction.
@@ -123,14 +140,28 @@ class PdfBedrockExtractor:
             "es_factura": true | false
             }
         """
-        validation_content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}} for img_b64 in images_base64]
+        validation_content = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": img_b64,
+                },
+            }
+            for img_b64 in images_base64
+        ]
         validation_content.append({"type": "text", "text": validation_prompt})
-        validation_response_text, tokens_val = self._invoke_bedrock_model(validation_content, model_id)
+        validation_response_text, tokens_val = self._invoke_bedrock_model(
+            validation_content, model_id
+        )
         total_tokens += tokens_val
         validation_data = self.json_parser.safe_json_load(validation_response_text)
 
         if not validation_data or not validation_data.get("es_factura"):
-            self.logger.info(f"Documento no es una factura, se ignora archivo. Validation response: {validation_response_text}")
+            self.logger.info(
+                f"Documento no es una factura, se ignora archivo. Validation response: {validation_response_text}"
+            )
             return None, total_tokens
 
         extraction_prompt = """
@@ -164,15 +195,28 @@ class PdfBedrockExtractor:
             - NO mezclar columnas
             - Devolver SOLO JSON válido
         """
-        extraction_content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}} for img_b64 in images_base64]
+        extraction_content = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": img_b64,
+                },
+            }
+            for img_b64 in images_base64
+        ]
         extraction_content.append({"type": "text", "text": extraction_prompt})
-        extraction_response_text, tokens_ext = self._invoke_bedrock_model(extraction_content, model_id)
+        extraction_response_text, tokens_ext = self._invoke_bedrock_model(
+            extraction_content, model_id
+        )
         total_tokens += tokens_ext
         return self.json_parser.safe_json_load(extraction_response_text), total_tokens
 
 
 class S3AttachmentManager:
     """Handles S3 operations for attachments."""
+
     def __init__(self, s3_client, s3_bucket_destino: str, msg_id: str, logger):
         self.s3_client = s3_client
         self.s3_bucket_destino = s3_bucket_destino
@@ -191,9 +235,13 @@ class S3AttachmentManager:
         """Checks if the attachment is a valid invoice type."""
         allowed_types = ["application/pdf", "text/xml", "application/xml"]
         allowed_extensions = (".pdf", ".xml")
-        return content_type in allowed_types or filename.lower().endswith(allowed_extensions)
+        return content_type in allowed_types or filename.lower().endswith(
+            allowed_extensions
+        )
 
-    def upload_attachment(self, filename: str, file_bytes: bytes, content_type: str) -> str:
+    def upload_attachment(
+        self, filename: str, file_bytes: bytes, content_type: str
+    ) -> str:
         """Uploads the attachment to S3 and returns its key."""
         now = datetime.now()
         dest_key = self.generate_s3_key(filename, now)
@@ -209,7 +257,15 @@ class S3AttachmentManager:
 
 class EmailProcessor:
     def __init__(
-        self, msg, operadores, s3_bucket_destino, s3_client, db_session, bedrock_client, msg_id, logger,
+        self,
+        msg,
+        operadores,
+        s3_bucket_destino,
+        s3_client,
+        db_session,
+        bedrock_client,
+        msg_id,
+        logger,
     ):
         self.msg = msg
         self.operadores = operadores
@@ -217,8 +273,10 @@ class EmailProcessor:
         self.msg_id = msg_id
         self.email_id = None
         self.json_parser = JsonParser()
-        self.pdf_extractor = PdfBedrockExtractor(bedrock_client, self.json_parser)
-        self.s3_manager = S3AttachmentManager(s3_client, s3_bucket_destino, msg_id, logger)
+        self.pdf_extractor = PdfBedrockExtractor(bedrock_client, logger, self.json_parser)
+        self.s3_manager = S3AttachmentManager(
+            s3_client, s3_bucket_destino, msg_id, logger
+        )
         self.logger = logger
 
     def get_date(self, invoice_date) -> str:
@@ -248,19 +306,30 @@ class EmailProcessor:
 
     def validar_desglose(factura) -> tuple[bool, str | None]:
         servicios = factura.get("servicios", [])
-        suma_importe = sum(s.get("importe") for s in servicios if s.get("importe") is not None)
+        suma_importe = sum(
+            s.get("importe") for s in servicios if s.get("importe") is not None
+        )
         suma_desc = sum(s.get("desc") for s in servicios if s.get("desc") is not None)
 
         checks = [
-            ("SUBTOTAL_NO_CUADRA",
-            abs(suma_importe - factura["subtotal"]) > TOLERANCIA),
-            ("TOTAL_SIN_IVA_NO_CUADRA",
-            abs(suma_desc - factura["total_sin_iva"]) > TOLERANCIA),
-            ("TOTAL_NO_CUADRA",
-            abs(factura["total_sin_iva"]
-                + factura.get("percepcion_iibb", 0)
-                + factura.get("percepcion_iva", 0)
-                - factura.get("importe_total_final")) > TOLERANCIA),
+            (
+                "SUBTOTAL_NO_CUADRA",
+                abs(suma_importe - factura["subtotal"]) > TOLERANCIA,
+            ),
+            (
+                "TOTAL_SIN_IVA_NO_CUADRA",
+                abs(suma_desc - factura["total_sin_iva"]) > TOLERANCIA,
+            ),
+            (
+                "TOTAL_NO_CUADRA",
+                abs(
+                    factura["total_sin_iva"]
+                    + factura.get("percepcion_iibb", 0)
+                    + factura.get("percepcion_iva", 0)
+                    - factura.get("importe_total_final")
+                )
+                > TOLERANCIA,
+            ),
         ]
 
         for motivo, falla in checks:
@@ -274,30 +343,33 @@ class EmailProcessor:
             cuit_limpio = cuit_ops.replace("-", "")
             if cuit_limpio == cuit.replace("-", ""):
                 return operadores
-            
-        for cuit_ops, operadores in self.operadores["operadores_by_cuit"].items():   
+
+        for cuit_ops, operadores in self.operadores["operadores_by_cuit"].items():
             if cuit_ops.split("-")[1] == cuit.split("-")[1]:
-                self.logger.info(f"Coincidencia parcial de CUIT encontrada: {cuit_ops} para CUIT {cuit}")
+                self.logger.info(
+                    f"Coincidencia parcial de CUIT encontrada: {cuit_ops} para CUIT {cuit}"
+                )
                 return None
-            
+
         return None
-    
+
     def _buscar_operador_por_sender(self, sender: str) -> Optional[str]:
         """Busca operadores por dirección de correo del remitente."""
         cuit = self.operadores.get("cuit_by_sender", {}).get(sender)
         if cuit:
             self.logger.info(f"CUIT {cuit} encontrado para sender {sender}")
             return cuit
-        self.logger.info(f"No se encontró CUIT para sender {sender}, se buscara por contenido de la factura.")
+        self.logger.info(
+            f"No se encontró CUIT para sender {sender}, se buscara por contenido de la factura."
+        )
         return None
-    
 
     def insert_email(self):
         """Inserta el registro inicial del correo en la tabla incoming_emails."""
         attachments = list(self.msg.iter_attachments())
         attachment_count = len(attachments)
         sender = str(self.msg.get("From", "Desconocido"))
-        
+
         state = EmailsState.RECIBIDO
         reason = None
 
@@ -315,7 +387,7 @@ class EmailProcessor:
             has_attachments=attachment_count > 0,
             attachment_count=attachment_count,
             processing_state=state,
-            processing_reason=reason
+            processing_reason=reason,
         )
         self.email_id = email_record
         with self.db_session() as session:
@@ -332,7 +404,9 @@ class EmailProcessor:
             cuit_by_sender = self.insert_email()
 
             if not cuit_by_sender:
-                self.logger.info(f"No se encontró CUIT asociado al sender {self.msg.get('From')}.")
+                self.logger.info(
+                    f"No se encontró CUIT asociado al sender {self.msg.get('From')}."
+                )
                 invoice_case = InvoiceCases(
                     email=self.email_id,
                     attachment_hash=None,
@@ -341,7 +415,7 @@ class EmailProcessor:
                     operator_id=None,
                     state=FacturasState.EN_REVISION,
                     state_reason=StateReason.REMITENTE_NO_COINCIDE,
-                    extraction_method="Bedrock"
+                    extraction_method="Bedrock",
                 )
 
                 with self.db_session() as session:
@@ -349,10 +423,16 @@ class EmailProcessor:
                     session.commit()
 
                 return 0, 0
-            
+
             attachments_data_for_db = []
-            
-            for part in self.msg.iter_attachments():
+        except Exception as e:
+            self.logger.error(
+                f"Error inesperado durante la inserción del correo {self.msg_id}: {e}"
+            )
+            return 0, 0
+
+        for part in self.msg.iter_attachments():
+            try:
                 filename = part.get_filename()
                 if not filename:
                     continue
@@ -360,22 +440,48 @@ class EmailProcessor:
                 content_type = part.get_content_type()
                 self.logger.info(f"Encontrado adjunto: {filename} ({content_type})")
 
-                if not self.s3_manager.is_valid_invoice_attachment(content_type, filename):
-                    self.logger.info(f"Archivo ignorado por tipo/extensión inválida: {filename}")
-                    continue
-
                 file_bytes = part.get_payload(decode=True)
                 attachment_hash = hashlib.sha256(file_bytes).hexdigest()
+                
+                dest_key = self.s3_manager.upload_attachment(
+                    filename, file_bytes, content_type
+                )
+
+                if not self.s3_manager.is_valid_invoice_attachment(
+                    content_type, filename
+                ):
+                    self.logger.info(
+                        f"Archivo ignorado por tipo/extensión inválida: {filename}"
+                    )
+
+                    invoice_case = InvoiceCases(
+                        email=self.email_id,
+                        attachment_hash=attachment_hash,
+                        attachment_name=filename,
+                        operator_cuit=cuit if cuit else None,
+                        operator_id=None,
+                        state=FacturasState.EN_REVISION,
+                        state_reason=StateReason.EXTENSION_INVALIDA,
+                        extraction_method="Bedrock",
+                    )
+                    with self.db_session() as session:
+                        session.add(invoice_case)
+                        session.commit()
+                    continue
 
                 data_agent, tokens = self.pdf_extractor.extract_invoice_data(file_bytes)
                 total_tokens_email += tokens
                 if data_agent is None:
-                    self.logger.info(f"No se pudo extraer datos de la factura para {filename}, se ignora.")
+                    self.logger.info(
+                        f"No se pudo extraer datos de la factura para {filename}, se ignora."
+                    )
                     continue
-                
+
                 cuit = cuit_by_sender or data_agent.get("cuit")
                 if not cuit:
-                    self.logger.info(f"No se pudo extraer CUIT para {filename}, se ignora archivo.")
+                    self.logger.info(
+                        f"No se pudo extraer CUIT para {filename}, se ignora archivo."
+                    )
                     invoice_case = InvoiceCases(
                         email=self.email_id,
                         attachment_hash=attachment_hash,
@@ -384,7 +490,7 @@ class EmailProcessor:
                         operator_id=None,
                         state=FacturasState.EN_REVISION,
                         state_reason=StateReason.CUIT_NO_IDENTIFICADO,
-                        extraction_method="Bedrock"
+                        extraction_method="Bedrock",
                     )
                     with self.db_session() as session:
                         session.add(invoice_case)
@@ -392,11 +498,15 @@ class EmailProcessor:
                     continue
 
                 if cuit_by_sender != data_agent.get("cuit"):
-                    self.logger.warning(f"CUIT extraído {data_agent.get('cuit')} no coincide con CUIT asociado al sender {cuit_by_sender} para {filename}.")
+                    self.logger.warning(
+                        f"CUIT extraído {data_agent.get('cuit')} no coincide con CUIT asociado al sender {cuit_by_sender} para {filename}."
+                    )
 
                 operadores = self._buscar_operador_por_cuit(cuit)
                 if not operadores:
-                    self.logger.info(f"No se pudo extraer operadores para este CUIT {cuit}")
+                    self.logger.info(
+                        f"No se pudo extraer operadores para este CUIT {cuit}"
+                    )
                     invoice_case = InvoiceCases(
                         email=self.email_id,
                         attachment_hash=attachment_hash,
@@ -405,7 +515,7 @@ class EmailProcessor:
                         operator_id=None,
                         state=FacturasState.EN_REVISION,
                         state_reason=StateReason.CUIT_DUDOSO,
-                        extraction_method="Bedrock"
+                        extraction_method="Bedrock",
                     )
                     with self.db_session() as session:
                         session.add(invoice_case)
@@ -421,20 +531,38 @@ class EmailProcessor:
                     operator_cuit=cuit,
                     operator_id=operadores_ids[0] if operadores_ids else None,
                     state=FacturasState.RECIBIDO,
-                    extraction_method="Bedrock"
+                    extraction_method="Bedrock",
                 )
 
-                invoice_validator = InvoicesValidation(data_agent, operadores, conn_mysql, self.logger)
-                data_agent, needs_retry = invoice_validator.vincular_servicios()
+                conn_mysql = get_connection()
+                conn_mysql.ping(reconnect=True)
+                try:
+                    invoice_validator = InvoicesValidation(
+                        data_agent, operadores, conn_mysql, self.logger
+                    )
+                    data_agent, needs_retry = invoice_validator.vincular_servicios()
 
-                if needs_retry:
-                    self.logger.info(f"Iniciando reintento con agente potente ({MODEL_POWERFUL}) para {filename}")
-                    data_agent_retry, tokens_retry = self.pdf_extractor.extract_invoice_data(file_bytes, model_id=MODEL_POWERFUL)
-                    total_tokens_email += tokens_retry
-                    
-                    if data_agent_retry:
-                        invoice_validator = InvoicesValidation(data_agent_retry, operadores, conn_mysql, self.logger)
-                        data_agent, needs_retry = invoice_validator.vincular_servicios()
+                    if needs_retry:
+                        self.logger.info(
+                            f"Iniciando reintento con agente potente ({MODEL_POWERFUL}) para {filename}"
+                        )
+                        data_agent_retry, tokens_retry = (
+                            self.pdf_extractor.extract_invoice_data(
+                                file_bytes, model_id=MODEL_POWERFUL
+                            )
+                        )
+                        total_tokens_email += tokens_retry
+
+                        if data_agent_retry:
+                            invoice_validator = InvoicesValidation(
+                                data_agent_retry, operadores, conn_mysql, self.logger
+                            )
+                            data_agent, needs_retry = invoice_validator.vincular_servicios()
+                finally:
+                    try:
+                        conn_mysql.close()
+                    except Exception:
+                        pass
 
                 old_state = invoice_case.state
                 servicios = data_agent.get("servicios", [])
@@ -460,10 +588,8 @@ class EmailProcessor:
                     to_state=state_invoice,
                     reason="Validación de servicios y vinculación.",
                     metadata_={"numero_factura": data_agent.get("numero_factura")},
-                    actor="System/Validator"
+                    actor="System/Validator",
                 )
-
-                dest_key = self.s3_manager.upload_attachment(filename, file_bytes, content_type)
 
                 invoice_extracted = InvoicesExtractedEmails(
                     cuit=cuit,
@@ -486,7 +612,7 @@ class EmailProcessor:
                     subtotal_control=data_agent.get("subtotal"),
                     descuento_control=data_agent.get("descuento"),
                     total_sin_iva_control=data_agent.get("total_sin_iva"),
-                    total_control=data_agent.get("importe_total_final")
+                    total_control=data_agent.get("importe_total_final"),
                 )
 
                 services = []
@@ -495,7 +621,9 @@ class EmailProcessor:
                 for servicio in servicios_pdf:
                     service = ServicesExtractedEmails(
                         codigo=servicio.get("voucher"),
-                        pasajero=self._normalize_text_encoding(servicio.get("nombre_del_viajero")),
+                        pasajero=self._normalize_text_encoding(
+                            servicio.get("nombre_del_viajero")
+                        ),
                         importe=servicio.get("importe"),
                         vinculado=servicio.get("vinculado"),
                         id_servicio=servicio.get("service_id"),
@@ -506,7 +634,7 @@ class EmailProcessor:
                         factura=servicio.get("factura"),
                         pending=servicio.get("pending"),
                         desc_neto=servicio.get("desc"),
-                        id_operador=servicio.get("operator_id")
+                        id_operador=servicio.get("operator_id"),
                     )
                     services.append(service)
 
@@ -519,20 +647,39 @@ class EmailProcessor:
                     monto=data_agent.get("percepcion_iibb"),
                 )
 
-                attachments_data_for_db.append({
-                    "filename": filename,
-                    "s3_key": dest_key,
-                    "objects": [
-                        invoice_case,
-                        invoice_transition_validation,
-                        invoice_extracted,
-                        percepcion_record,
-                        *services
-                    ]
-                })
-        except Exception as e:
-            self.logger.error(f"Error inesperado durante el procesamiento del correo {self.msg_id}: {e}")
-            return 0, 0
+                attachments_data_for_db.append(
+                    {
+                        "filename": filename,
+                        "s3_key": dest_key,
+                        "objects": [
+                            invoice_case,
+                            invoice_transition_validation,
+                            invoice_extracted,
+                            percepcion_record,
+                            *services,
+                        ],
+                    }
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Error inesperado durante el procesamiento del correo {self.msg_id}: {e}"
+                )
+                invoice_case = InvoiceCases(
+                    email=self.email_id,
+                    attachment_hash=attachment_hash if attachment_hash else None,
+                    attachment_name=filename if filename else None,
+                    operator_cuit=cuit if cuit else None,
+                    operator_id=operadores_ids[0] if operadores_ids else None,
+                    state=FacturasState.ERROR,
+                    state_reason=e,
+                    extraction_method="Bedrock",
+                )
+                
+                with self.db_session() as session:
+                    session.add(invoice_case)
+                    session.commit()
+
+                continue
 
         successful_attachments = []
         failed_attachments = []
@@ -542,63 +689,89 @@ class EmailProcessor:
                 filename = attachment_data["filename"]
                 s3_key = attachment_data["s3_key"]
                 objects_to_add = attachment_data["objects"]
-                
+
                 try:
                     session.add_all(objects_to_add)
                     session.flush()
                     session.commit()
-                    successful_attachments.append({"filename": filename, "s3_key": s3_key})
-                    self.logger.info(f"Factura {filename} procesada y guardada exitosamente.")
+                    successful_attachments.append(
+                        {"filename": filename, "s3_key": s3_key}
+                    )
+                    self.logger.info(
+                        f"Factura {filename} procesada y guardada exitosamente."
+                    )
                 except IntegrityError as e:
                     session.rollback()
-                    self.logger.error(f"Error de integridad al guardar factura {filename}: {e}")
-                    
-                    current_invoice_case = next((obj for obj in objects_to_add if isinstance(obj, InvoiceCases)), None)
-                    current_invoice_extracted = next((obj for obj in objects_to_add if isinstance(obj, InvoicesExtractedEmails)), None)
+                    self.logger.error(
+                        f"Error de integridad al guardar la factura {filename}: {e}"
+                    )
 
-                    current_services = [obj for obj in objects_to_add if isinstance(obj, ServicesExtractedEmails)]
-                    current_validation_transition = next((obj for obj in objects_to_add if isinstance(obj, InvoiceTransitions) and obj.from_state is not None), None)
+                    error_message = str(getattr(e, "orig", e))
+                    is_invoice_duplicate = (
+                        "_invoice_unique_constraint_" in error_message
+                        or (
+                            "invoices_extracted_emails" in error_message
+                            and "cuit" in error_message
+                            and "numero_factura" in error_message
+                            and "tipo_comprobante" in error_message
+                        )
+                    )
 
-                    if current_invoice_case and current_invoice_extracted:
-                        existing_invoice_case_in_db = session.query(InvoiceCases).filter_by(
-                            email_id=current_invoice_case.email_id,
-                            attachment_hash=current_invoice_case.attachment_hash
-                        ).first()
-                        
-                        if existing_invoice_case_in_db:
-                            self.logger.info(f"Factura {filename} (hash: {current_invoice_case.attachment_hash}) ya existe. Marcando *nueva* factura como DUPLICADO.")
-                            
-                            original_intended_state = current_invoice_case.state
-                            current_invoice_case.state = FacturasState.DUPLICADO
-                            
-                            duplicate_transition = InvoiceTransitions(
-                                case=current_invoice_case,
-                                from_state=original_intended_state,
-                                to_state=FacturasState.DUPLICADO,
-                                reason=f"Factura duplicada detectada (hash: {current_invoice_case.attachment_hash}).",
-                                metadata_={"numero_factura": current_invoice_extracted.numero_factura if current_invoice_extracted else "N/A"},
-                                actor="System/Extractor"
+                    if is_invoice_duplicate:
+                        original_case = next(
+                            (
+                                obj
+                                for obj in objects_to_add
+                                if isinstance(obj, InvoiceCases)
+                            ),
+                            None,
+                        )
+
+                        duplicate_case = InvoiceCases(
+                            email=self.email_id,
+                            attachment_hash=(
+                                original_case.attachment_hash if original_case else None
+                            ),
+                            attachment_name=(
+                                original_case.attachment_name if original_case else filename
+                            ),
+                            operator_cuit=(
+                                original_case.operator_cuit if original_case else None
+                            ),
+                            operator_id=(
+                                original_case.operator_id if original_case else None
+                            ),
+                            state=FacturasState.DUPLICADO,
+                            state_reason=StateReason.FACTURA_DUPLICADA,
+                            extraction_method=(
+                                original_case.extraction_method
+                                if original_case
+                                else "Bedrock"
+                            ),
+                        )
+
+                        duplicate_transition = InvoiceTransitions(
+                            case=duplicate_case,
+                            from_state=(
+                                original_case.state if original_case else FacturasState.RECIBIDO
+                            ),
+                            to_state=FacturasState.DUPLICADO,
+                            reason=StateReason.FACTURA_DUPLICADA,
+                            actor="System/DB",
+                        )
+
+                        try:
+                            session.add_all([duplicate_case, duplicate_transition])
+                            session.commit()
+                            self.logger.info(
+                                f"Factura {filename} registrada como DUPLICADO."
                             )
-                            try:
-                                session.add(current_invoice_case)
-                                session.add(current_invoice_extracted)
-                                session.add_all(current_services)
-                                session.add(current_validation_transition)
-                                session.add(duplicate_transition)
-                                session.commit()
-                                successful_attachments.append({"filename": filename, "s3_key": s3_key, "status": "DUPLICADO"})
-                                self.logger.info(f"Nueva factura {filename} marcada como DUPLICADO y guardada.")
-                            except Exception as update_e:
-                                session.rollback()
-                                self.logger.error(f"Error al guardar la nueva factura {filename} como DUPLICADO y su transición: {update_e}")
-                                failed_attachments.append({"filename": filename, "reason": "ERROR_DUPLICADO_SAVE"})
-                        else:
-                            self.logger.error(f"Error de integridad no relacionado con duplicado de InvoiceCase para {filename}: {e}")
-                            failed_attachments.append({"filename": filename, "reason": "ERROR_INTEGRIDAD"})
-                except Exception as e:
-                    session.rollback()
-                    self.logger.error(f"Error inesperado al guardar factura {filename}: {e}")
-                    failed_attachments.append({"filename": filename, "reason": "ERROR_INESPERADO"})
+                        except IntegrityError as duplicate_error:
+                            session.rollback()
+                            self.logger.error(
+                                "No se pudo registrar el caso duplicado para "
+                                f"{filename}: {duplicate_error}"
+                            )
 
             final_state = EmailsState.PROCESADO
             if not successful_attachments and not failed_attachments:
@@ -614,5 +787,6 @@ class EmailProcessor:
             })
             
             session.commit()
+                    
 
         return processing_time_ms, total_tokens_email

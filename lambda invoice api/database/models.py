@@ -26,8 +26,8 @@ class InvoicesExtractedEmails(Base):
     __table_args__ = (
         UniqueConstraint(
             "cuit",
-            "s3_key",
             "numero_factura",
+            "tipo_comprobante",
             name="_invoice_unique_constraint_",
         ),
         {"schema": "facturas_bot"},

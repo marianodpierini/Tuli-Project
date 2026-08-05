@@ -4,6 +4,7 @@ import sys
 import os
 import logging
 import google.cloud.pubsub_v1 as pubsub_v1
+from datetime import date
 
 import base64
 from email import policy
@@ -30,6 +31,7 @@ OPERADORES_BUCKET = os.environ.get("OPERADORES_BUCKET", "aero-turi-documents")
 OPERADORES_KEY = os.environ.get("OPERADORES_KEY", "lambda-files/operadores.json")
 KEY_SVS_ACC = os.environ.get("SVS_ACC", "lambda-files/key_account_serv.json")
 DEST_BUCKET = os.environ.get("DEST_BUCKET", "aero-turi-documents")
+RAW_EMAILS_PREFIX = os.environ.get("RAW_EMAILS_PREFIX", "emails-raw/emails")
 
 
 class ConfigService:
@@ -210,6 +212,7 @@ class InvoiceExtractionOrchestrator:
 
             try:
                 raw_email = self.gmail_service.get_raw_email(msg_id)
+                self._save_raw_email_to_s3(msg_id, raw_email)
                 parsed_msg = BytesParser(policy=policy.default).parsebytes(raw_email)
 
                 email_processor = EmailProcessor(
@@ -226,6 +229,18 @@ class InvoiceExtractionOrchestrator:
 
         ack_ids = [m["ack_id"] for m in messages]
         self.pubsub_service.ack_messages(ack_ids)
+
+    def _save_raw_email_to_s3(self, msg_id: str, raw_email: bytes) -> str:
+        date_prefix = date.today().isoformat()
+        key = f"{RAW_EMAILS_PREFIX.rstrip('/')}/{date_prefix}/{msg_id}.eml"
+        self.s3_client.put_object(
+            Bucket=DEST_BUCKET,
+            Key=key,
+            Body=raw_email,
+            ContentType="message/rfc822",
+        )
+        logger.info(f"Correo .eml guardado en s3://{DEST_BUCKET}/{key}")
+        return key
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:

@@ -33,6 +33,23 @@ LIST_STATES = [
     "ERROR",
 ]
 
+ACK_SUCCESS_STATES = {
+    "cargada",
+    "cargado",
+    "loaded",
+    "ok",
+    "success",
+    "exitosa",
+}
+
+ACK_ERROR_STATES = {
+    "error",
+    "failed",
+    "fallida",
+    "fallo",
+    "rechazada",
+}
+
 
 class CustomJSONEncoder(json.JSONEncoder):
     """Codificador para manejar tipos Decimal y objetos de fecha en el JSON."""
@@ -340,6 +357,229 @@ class RequestHandler:
                         {"error": "Error actualizando factura", "details": str(e)}
                     ),
                 }
+
+    def _normalize_ack_target_state(self, raw_state):
+        if not isinstance(raw_state, str):
+            return None
+
+        normalized = raw_state.strip().lower().replace("-", "_").replace(" ", "_")
+
+        if normalized in ACK_SUCCESS_STATES:
+            return "LOADED_BY_IT"
+        if normalized in ACK_ERROR_STATES:
+            return "LOAD_FAILED"
+        if normalized == "loaded_by_it":
+            return "LOADED_BY_IT"
+        if normalized == "load_failed":
+            return "LOAD_FAILED"
+
+        return None
+
+    def handle_ack_invoices(self):
+        try:
+            body = json.loads(self.event.get("body", "{}"))
+        except json.JSONDecodeError:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Body JSON invalido"}),
+            }
+
+        acks = body.get("acuses")
+        if acks is None:
+            acks = body.get("acks")
+        if acks is None:
+            acks = body.get("items")
+
+        if not isinstance(acks, list):
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Formato invalido",
+                        "details": "Se esperaba un array en 'acuses', 'acks' o 'items'",
+                    }
+                ),
+            }
+
+        responses = []
+
+        with SessionLocal() as session:
+            for index, ack in enumerate(acks):
+                item_result = {
+                    "index": index,
+                    "ok": False,
+                }
+
+                if not isinstance(ack, dict):
+                    item_result.update(
+                        {
+                            "status_code": 400,
+                            "error": "Acuse invalido",
+                            "details": "Cada elemento del array debe ser un objeto JSON",
+                        }
+                    )
+                    responses.append(item_result)
+                    continue
+
+                invoice_id = ack.get("id_factura")
+                if invoice_id is None:
+                    invoice_id = ack.get("invoice_id")
+                if invoice_id is None:
+                    invoice_id = ack.get("id")
+
+                raw_ack_state = ack.get("resultado")
+                if raw_ack_state is None:
+                    raw_ack_state = ack.get("status")
+                if raw_ack_state is None:
+                    raw_ack_state = ack.get("estado")
+                if raw_ack_state is None:
+                    raw_ack_state = ack.get("outcome")
+
+                reason = ack.get("motivo")
+                if reason is None:
+                    reason = ack.get("reason")
+                if reason is None:
+                    reason = ack.get("detalle_error")
+
+                item_result["id_factura"] = invoice_id
+                target_state = self._normalize_ack_target_state(raw_ack_state)
+
+                if invoice_id is None:
+                    item_result.update(
+                        {
+                            "status_code": 400,
+                            "error": "Falta id_factura",
+                        }
+                    )
+                    responses.append(item_result)
+                    continue
+
+                if target_state is None:
+                    item_result.update(
+                        {
+                            "status_code": 400,
+                            "error": "Estado de acuse invalido",
+                            "details": "Valores validos: cargada/loaded o error/failed",
+                        }
+                    )
+                    responses.append(item_result)
+                    continue
+
+                normalized_reason = None
+                if isinstance(reason, str):
+                    normalized_reason = reason.strip()
+
+                if target_state == "LOAD_FAILED" and not normalized_reason:
+                    item_result.update(
+                        {
+                            "status_code": 400,
+                            "error": "Motivo requerido",
+                            "details": "Cuando el acuse es error/fallida se debe enviar motivo",
+                        }
+                    )
+                    responses.append(item_result)
+                    continue
+
+                try:
+                    invoice = (
+                        session.query(InvoicesExtractedEmails)
+                        .filter_by(id=invoice_id)
+                        .first()
+                    )
+
+                    if not invoice:
+                        item_result.update(
+                            {
+                                "status_code": 404,
+                                "error": "Factura no encontrada",
+                            }
+                        )
+                        responses.append(item_result)
+                        continue
+
+                    invoice_case = (
+                        session.query(InvoiceCases)
+                        .filter_by(case_id=invoice.case_id)
+                        .first()
+                    )
+
+                    if not invoice_case:
+                        item_result.update(
+                            {
+                                "status_code": 404,
+                                "error": "Caso de factura no encontrado",
+                            }
+                        )
+                        responses.append(item_result)
+                        continue
+
+                    current_reason = invoice_case.state_reason or ""
+                    expected_reason = normalized_reason or ""
+
+                    if (
+                        invoice_case.state == target_state
+                        and (
+                            target_state != "LOAD_FAILED"
+                            or current_reason == expected_reason
+                        )
+                    ):
+                        item_result.update(
+                            {
+                                "ok": True,
+                                "status_code": 200,
+                                "idempotent": True,
+                                "state": invoice_case.state,
+                                "message": "Acuse ya aplicado previamente",
+                            }
+                        )
+                        responses.append(item_result)
+                        continue
+
+                    old_state = invoice_case.state
+                    invoice_case.state = target_state
+                    invoice_case.state_reason = (
+                        normalized_reason if target_state == "LOAD_FAILED" else None
+                    )
+
+                    invoice_transition = InvoiceTransitions(
+                        case_id=invoice_case.case_id,
+                        from_state=old_state,
+                        to_state=target_state,
+                        reason=(
+                            normalized_reason if target_state == "LOAD_FAILED" else None
+                        ),
+                        actor="IT",
+                    )
+                    session.add(invoice_transition)
+                    session.commit()
+
+                    item_result.update(
+                        {
+                            "ok": True,
+                            "status_code": 200,
+                            "idempotent": False,
+                            "state": target_state,
+                        }
+                    )
+                    responses.append(item_result)
+
+                except Exception as e:
+                    session.rollback()
+                    self.logger.error(f"Error procesando acuse para factura {invoice_id}: {e}")
+                    item_result.update(
+                        {
+                            "status_code": 500,
+                            "error": "Error procesando acuse",
+                            "details": str(e),
+                        }
+                    )
+                    responses.append(item_result)
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"items": responses}, cls=CustomJSONEncoder),
+        }
 
     def handle_get_pdf_invoice(self):
         try:

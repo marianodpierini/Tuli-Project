@@ -15,8 +15,6 @@ from database.db_mysql import get_connection
 
 from .invoices_validation import InvoicesValidation
 
-conn_mysql = get_connection()
-
 class JsonParser:
     """Utility for robust JSON parsing."""
     def safe_json_load(self, text: str) -> Optional[Dict[str, Any]]:
@@ -72,18 +70,17 @@ class ReprocessInvoice:
             base64_images.append(base64.b64encode(buffer.getvalue()).decode("utf-8"))
         return base64_images
     
-    def _buscar_operador_por_cuit(self, cuit: str, operadores: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    def _buscar_operador_por_cuit(self, cuit: str) -> Optional[List[Dict[str, Any]]]:
         """Busca operadores por CUIT."""
-        for cuit_ops, operadores in operadores["operadores_by_cuit"].items():
+        for cuit_ops, operadores in self.operadores["operadores_by_cuit"].items():
             cuit_limpio = cuit_ops.replace("-", "")
             if cuit_limpio == cuit.replace("-", ""):
                 return operadores
             
+        for cuit_ops, operadores in self.operadores["operadores_by_cuit"].items():   
             if cuit_ops.split("-")[1] == cuit.split("-")[1]:
                 self.logger.info(f"Coincidencia parcial de CUIT encontrada: {cuit_ops} para CUIT {cuit}")
-                return operadores
-            
-        return None
+                return None
     
     def _invoke_bedrock_model(self, content: List[Dict[str, Any]], model_id: str) -> Tuple[str, int]:
         """Invokes the Bedrock model with the given content and model ID."""
@@ -140,11 +137,15 @@ class ReprocessInvoice:
             - importe_total_final
             - tipo_comprobante (factura / nota de débito / nota de crédito)
             - cotizacion (si la moneda es distinta a ARS) (El texto donde aparece es este 'A efectos contables e impositivos el tipo de cambio de esta factura es  $ 1385')
-            - Subtotal
-            - Descuento
-            - Total sin I.V.A
-            - I.V.A 21%
-            - Percepcion IIBB BS
+            - Subtotal (valor numerico decimal)
+            - Descuento (valor numerico decimal)
+            - Total sin I.V.A (valor numerico decimal)
+            - I.V.A 21% (valor numerico decimal)
+            - Percepcion IIBB (valor numerico decimal)
+            - No computable
+            - Gravado 21
+            - Gravado 105
+            - Percepcion I.V.A
             - servicios:
                 - voucher
                 - producto
@@ -178,6 +179,15 @@ class ReprocessInvoice:
             "cotizacion": data_agent.get("cotizacion"),
             "punto_venta": data_agent.get("numero_factura").split("-")[0],
             "numero_comprobante": data_agent.get("numero_factura").split("-")[1],
+            "exento": data_agent.get("total_sin_iva"),
+            "no_computable": data_agent.get("no_computable"),
+            "gravado_21": data_agent.get("gravado_21"),
+            "gravado_105": data_agent.get("gravado_105"),
+            "percepcion_iva": data_agent.get("percepcion_iva"),
+            "subtotal_control": data_agent.get("subtotal"),
+            "descuento_control": data_agent.get("descuento"),
+            "total_sin_iva_control": data_agent.get("total_sin_iva"),
+            "total_control": data_agent.get("importe_total_final"),
         }
 
         for service in data_agent.get("servicios", []):
@@ -214,6 +224,15 @@ class ReprocessInvoice:
             "cotizacion",
             "punto_venta",
             "numero_comprobante",
+            "exento",
+            "no_computable",
+            "gravado_21",
+            "gravado_105",
+            "percepcion_iva",
+            "subtotal_control",
+            "descuento_control",
+            "total_sin_iva_control",
+            "total_control",
         ]
 
         changes = []
@@ -252,7 +271,6 @@ class ReprocessInvoice:
         ]
 
         changes = []
-
         existing_services = {
             (
                 service.codigo,
@@ -280,6 +298,9 @@ class ReprocessInvoice:
                 new_value = service_data.get(field)
                 old_value = getattr(existing_service, field)
 
+                if new_value is None:
+                    continue
+
                 if old_value != new_value:
                     setattr(existing_service, field, new_value)
 
@@ -294,6 +315,28 @@ class ReprocessInvoice:
 
         return changes
 
+    def _count_linked_services_db(self, invoice) -> int:
+        return sum(1 for service in invoice.services if getattr(service, "id_reserva_mo", None) is not None)
+
+    def _count_linked_services_mapped(self, invoice, mapped_data) -> int:
+        existing_keys = {
+            (
+                service.codigo,
+                service.pasajero,
+            )
+            for service in invoice.services
+        }
+
+        return sum(
+            1
+            for service_data in mapped_data.get("services", [])
+            if (
+                service_data.get("codigo"),
+                service_data.get("pasajero"),
+            ) in existing_keys
+            and service_data.get("id_reserva_mo") is not None
+        )
+
 
     def reprocess(self):
         s3_key = self.get_pdf_invoice()
@@ -305,6 +348,9 @@ class ReprocessInvoice:
         data_agent = self.extract_invoice_data(file_bytes, model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
         operadores = self._buscar_operador_por_cuit(data_agent.get("cuit"), operators_file)
+
+        conn_mysql = get_connection()
+        conn_mysql.ping(reconnect=True)
 
         invoice_validator = InvoicesValidation(data_agent, operadores, conn_mysql, self.logger)
         data_agent = invoice_validator.vincular_servicios()
@@ -323,6 +369,24 @@ class ReprocessInvoice:
                     "statusCode": 404,
                     "body": json.dumps(
                         {"error": "Factura no encontrada"}
+                    ),
+                }
+
+            linked_before = self._count_linked_services_db(invoice)
+            linked_after = self._count_linked_services_mapped(invoice, mapped_data)
+
+            if linked_after < linked_before:
+                self.logger.warning(
+                    f"Reproceso descartado para factura {invoice.id}: vinculaciones previas={linked_before}, nuevas={linked_after}."
+                )
+                return {
+                    "statusCode": 409,
+                    "body": json.dumps(
+                        {
+                            "error": "Reproceso descartado: la nueva vinculacion tiene menos servicios que la actual.",
+                            "linked_before": linked_before,
+                            "linked_after": linked_after,
+                        }
                     ),
                 }
 

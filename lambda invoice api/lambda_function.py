@@ -18,7 +18,7 @@ CORS_ALLOW_HEADERS = os.getenv(
     "CORS_ALLOW_HEADERS",
     "Content-Type,Authorization,X-Api-Key,X-Amz-Date,X-Amz-Security-Token",
 )
-CORS_ALLOW_METHODS = os.getenv("CORS_ALLOW_METHODS", "GET,PATCH,OPTIONS")
+CORS_ALLOW_METHODS = os.getenv("CORS_ALLOW_METHODS", "GET,POST,PATCH,OPTIONS")
 
 
 def _cors_headers():
@@ -74,6 +74,8 @@ def lambda_handler(event, context):
 
         if resource == "/invoices/send_invoices/{estado}" and method == "GET":
             return _with_cors(request_handler.handle_send_invoices())
+        if resource == "/invoices/ack" and method == "POST":
+            return _with_cors(request_handler.handle_ack_invoices())
         if resource == "/invoices/update_invoice/{id_factura}" and method == "PATCH":
             return _with_cors(request_handler.handle_update_invoice())
         if resource == "/invoices/see_invoice/{id_factura}/pdf" and method == "GET":
