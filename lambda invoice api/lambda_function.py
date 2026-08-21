@@ -76,6 +76,8 @@ def lambda_handler(event, context):
             return _with_cors(request_handler.handle_send_invoices())
         if resource == "/invoices/ack" and method == "POST":
             return _with_cors(request_handler.handle_ack_invoices())
+        if resource == "/invoices/{id}/decision" and method in ("PATCH", "POST"):
+            return _with_cors(request_handler.handle_invoice_decision())
         if resource == "/invoices/update_invoice/{id_factura}" and method == "PATCH":
             return _with_cors(request_handler.handle_update_invoice())
         if resource == "/invoices/see_invoice/{id_factura}/pdf" and method == "GET":

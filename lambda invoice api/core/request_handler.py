@@ -67,6 +67,160 @@ class RequestHandler:
         self.event = event
         self.logger = logger
 
+    def _normalize_invoice_decision(self, raw_decision):
+        if not isinstance(raw_decision, str):
+            return None
+
+        normalized_decision = (
+            raw_decision.strip().lower().replace("-", "_").replace(" ", "_")
+        )
+
+        if normalized_decision in {"aprobar", "aprobada", "approved", "approve"}:
+            return "LISTO_PARA_CARGAR"
+        if normalized_decision in {"rechazar", "rechazada", "rejected", "reject"}:
+            return "RECHAZADA"
+
+        return None
+
+    def handle_invoice_decision(self):
+        invoice_id = self.event.get("pathParameters", {}).get("id")
+        if invoice_id is None:
+            invoice_id = self.event.get("pathParameters", {}).get("id_factura")
+
+        if invoice_id is None:
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Falta id de factura",
+                        "details": "Se esperaba el parametro de path 'id'",
+                    }
+                ),
+            }
+
+        try:
+            body = json.loads(self.event.get("body", "{}"))
+        except json.JSONDecodeError:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Body JSON invalido"}),
+            }
+
+        raw_decision = body.get("decision")
+        if raw_decision is None:
+            raw_decision = body.get("action")
+
+        reason = body.get("reason")
+        if reason is None:
+            reason = body.get("motivo")
+
+        target_state = self._normalize_invoice_decision(raw_decision)
+        if target_state is None:
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Decision invalida",
+                        "details": "Enviar decision=aprobar|rechazar",
+                    }
+                ),
+            }
+
+        normalized_reason = reason.strip() if isinstance(reason, str) else None
+        if target_state == "RECHAZADA" and not normalized_reason:
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Motivo requerido",
+                        "details": "Para rechazar una factura se debe enviar reason",
+                    }
+                ),
+            }
+
+        with SessionLocal() as session:
+            try:
+                invoice = (
+                    session.query(InvoicesExtractedEmails).filter_by(id=invoice_id).first()
+                )
+
+                if not invoice:
+                    return {
+                        "statusCode": 404,
+                        "body": json.dumps({"error": "Factura no encontrada"}),
+                    }
+
+                invoice_case = (
+                    session.query(InvoiceCases).filter_by(case_id=invoice.case_id).first()
+                )
+
+                if not invoice_case:
+                    return {
+                        "statusCode": 404,
+                        "body": json.dumps({"error": "Caso de factura no encontrado"}),
+                    }
+
+                old_state = invoice_case.state
+                old_reason = invoice_case.state_reason or ""
+                new_reason = normalized_reason if target_state == "RECHAZADA" else None
+
+                is_idempotent = old_state == target_state and (
+                    target_state != "RECHAZADA" or old_reason == (new_reason or "")
+                )
+
+                if is_idempotent:
+                    return {
+                        "statusCode": 200,
+                        "body": json.dumps(
+                            {
+                                "message": "Decision ya aplicada previamente",
+                                "idempotent": True,
+                                "id_factura": invoice.id,
+                                "state": invoice_case.state,
+                                "reason": invoice_case.state_reason,
+                            }
+                        ),
+                    }
+
+                invoice_case.state = target_state
+                invoice_case.state_reason = new_reason
+
+                invoice_transition = InvoiceTransitions(
+                    case_id=invoice_case.case_id,
+                    from_state=old_state,
+                    to_state=target_state,
+                    reason=new_reason,
+                    actor="Frontend API",
+                )
+                session.add(invoice_transition)
+                session.commit()
+
+                return {
+                    "statusCode": 200,
+                    "body": json.dumps(
+                        {
+                            "message": "Decision aplicada correctamente",
+                            "idempotent": False,
+                            "id_factura": invoice.id,
+                            "state": target_state,
+                            "reason": new_reason,
+                        }
+                    ),
+                }
+
+            except Exception as e:
+                session.rollback()
+                self.logger.error(f"Error aplicando decision de factura {invoice_id}: {e}")
+                return {
+                    "statusCode": 500,
+                    "body": json.dumps(
+                        {
+                            "error": "Error aplicando decision de factura",
+                            "details": str(e),
+                        }
+                    ),
+                }
+
     def handle_send_invoices(self):
         raw_estado = self.event.get("pathParameters", {}).get(
             "estado", "LISTO PARA CARGAR"
