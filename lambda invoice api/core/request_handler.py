@@ -801,6 +801,172 @@ class RequestHandler:
                 ),
             }
 
+    def handle_list_invoices(self):
+        query_params = self.event.get("queryStringParameters") or {}
+
+        raw_states = query_params.get("estado")
+        page_param = query_params.get("page")
+        limit_param = query_params.get("limit")
+
+        try:
+            page = int(page_param) if page_param is not None else 1
+            limit = int(limit_param) if limit_param is not None else 50
+        except (TypeError, ValueError):
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Parametros de paginacion invalidos",
+                        "details": "page y limit deben ser numeros enteros",
+                    }
+                ),
+            }
+
+        if page < 1 or limit < 1:
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Parametros de paginacion invalidos",
+                        "details": "page y limit deben ser mayores o iguales a 1",
+                    }
+                ),
+            }
+
+        limit = min(limit, 200)
+        offset = (page - 1) * limit
+
+        state_filters = []
+        if raw_states:
+            decoded_states = unquote_plus(raw_states)
+            state_filters = [
+                state.strip()
+                for state in decoded_states.split(",")
+                if state and state.strip()
+            ]
+
+        session = SessionLocal()
+
+        try:
+            service_counts_subquery = (
+                session.query(
+                    ServicesExtractedEmails.invoice_id.label("invoice_id"),
+                    func.count(ServicesExtractedEmails.id).label("servicios_total"),
+                    func.count(ServicesExtractedEmails.id_servicio).label(
+                        "servicios_vinculados"
+                    ),
+                )
+                .group_by(ServicesExtractedEmails.invoice_id)
+                .subquery()
+            )
+
+            query = (
+                session.query(
+                    InvoicesExtractedEmails.id.label("id_factura"),
+                    InvoiceCases.case_id,
+                    InvoiceCases.state,
+                    InvoiceCases.state_reason,
+                    InvoicesExtractedEmails.razon_social,
+                    InvoicesExtractedEmails.cuit,
+                    InvoicesExtractedEmails.numero_factura,
+                    InvoicesExtractedEmails.fecha_factura,
+                    InvoicesExtractedEmails.moneda,
+                    InvoicesExtractedEmails.importe_total,
+                    InvoiceCases.attachment_name,
+                    InvoiceCases.created_at,
+                    func.coalesce(
+                        service_counts_subquery.c.servicios_total,
+                        0,
+                    ).label("servicios_total"),
+                    func.coalesce(
+                        service_counts_subquery.c.servicios_vinculados,
+                        0,
+                    ).label("servicios_vinculados"),
+                )
+                .join(
+                    InvoiceCases,
+                    InvoicesExtractedEmails.case_id == InvoiceCases.case_id,
+                )
+                .outerjoin(
+                    service_counts_subquery,
+                    service_counts_subquery.c.invoice_id == InvoicesExtractedEmails.id,
+                )
+            )
+
+            if state_filters:
+                query = query.filter(InvoiceCases.state.in_(state_filters))
+
+            total_items_query = session.query(func.count(InvoicesExtractedEmails.id)).join(
+                InvoiceCases,
+                InvoicesExtractedEmails.case_id == InvoiceCases.case_id,
+            )
+
+            if state_filters:
+                total_items_query = total_items_query.filter(
+                    InvoiceCases.state.in_(state_filters)
+                )
+
+            total_items = total_items_query.scalar() or 0
+            total_pages = (total_items + limit - 1) // limit if total_items else 0
+
+            results = (
+                query.order_by(InvoicesExtractedEmails.id.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+
+            items = []
+            for row in results:
+                items.append(
+                    {
+                        "id_factura": row.id_factura,
+                        "case_id": str(row.case_id) if row.case_id is not None else None,
+                        "state": row.state,
+                        "state_reason": row.state_reason,
+                        "razon_social": row.razon_social,
+                        "cuit": row.cuit,
+                        "numero_factura": row.numero_factura,
+                        "fecha_factura": row.fecha_factura,
+                        "moneda": row.moneda,
+                        "importe_total": row.importe_total,
+                        "servicios_total": row.servicios_total,
+                        "servicios_vinculados": row.servicios_vinculados,
+                        "attachment_name": row.attachment_name,
+                        "created_at": row.created_at,
+                    }
+                )
+
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(
+                    {
+                        "items": items,
+                        "pagination": {
+                            "page": page,
+                            "limit": limit,
+                            "total_items": total_items,
+                            "total_pages": total_pages,
+                            "has_next": page < total_pages,
+                            "has_previous": page > 1,
+                        },
+                    },
+                    cls=CustomJSONEncoder,
+                ),
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error listando facturas: {e}")
+            return {
+                "statusCode": 500,
+                "body": json.dumps(
+                    {"error": "Error listando facturas", "details": str(e)}
+                ),
+            }
+        finally:
+            session.close()
+
     def handle_get_invoice(self):
         invoice_id = self.event.get("pathParameters", {}).get("id_factura")
         session = SessionLocal()
