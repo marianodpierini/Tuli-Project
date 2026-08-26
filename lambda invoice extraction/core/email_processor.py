@@ -173,6 +173,7 @@ class PdfBedrockExtractor:
             - moneda
             - importe_total_final
             - tipo_comprobante (factura / nota de débito / nota de crédito)
+            - tipo de factura (factura A / factura B / factura C)
             - cotizacion (si la moneda es distinta a ARS) (El texto donde aparece es este 'A efectos contables e impositivos el tipo de cambio de esta factura es  $ 1385')
             - Subtotal (valor numerico decimal)
             - Descuento (valor numerico decimal)
@@ -187,7 +188,7 @@ class PdfBedrockExtractor:
                 - voucher
                 - producto
                 - nombre_del_viajero
-                - desc (descuento)
+                - desc (descuento valor numerico decimal)
                 - importe
             IMPORTANTE:
             - Respetar la estructura visual de la tabla
@@ -304,29 +305,41 @@ class EmailProcessor:
 
         return normalized.strip()
 
-    def validar_desglose(factura) -> tuple[bool, str | None]:
+    def validar_desglose(self, factura) -> tuple[bool, str | None]:
+        def _to_float(value: Any, default: float = 0.0) -> float:
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
         servicios = factura.get("servicios", [])
-        suma_importe = sum(
-            s.get("importe") for s in servicios if s.get("importe") is not None
-        )
-        suma_desc = sum(s.get("desc") for s in servicios if s.get("desc") is not None)
+        suma_importe = sum(_to_float(s.get("importe")) for s in servicios)
+        suma_desc = sum(_to_float(s.get("desc")) for s in servicios)
+
+        subtotal = _to_float(factura.get("subtotal"))
+        total_sin_iva = _to_float(factura.get("total_sin_iva"))
+        percepcion_iibb = _to_float(factura.get("percepcion_iibb"))
+        percepcion_iva = _to_float(factura.get("percepcion_iva"))
+        importe_total_final = _to_float(factura.get("importe_total_final"))
 
         checks = [
             (
                 "SUBTOTAL_NO_CUADRA",
-                abs(suma_importe - factura["subtotal"]) > TOLERANCIA,
+                abs(suma_importe - subtotal) > TOLERANCIA,
             ),
             (
                 "TOTAL_SIN_IVA_NO_CUADRA",
-                abs(suma_desc - factura["total_sin_iva"]) > TOLERANCIA,
+                abs(suma_desc - total_sin_iva) > TOLERANCIA,
             ),
             (
                 "TOTAL_NO_CUADRA",
                 abs(
-                    factura["total_sin_iva"]
-                    + factura.get("percepcion_iibb", 0)
-                    + factura.get("percepcion_iva", 0)
-                    - factura.get("importe_total_final")
+                    total_sin_iva
+                    + percepcion_iibb
+                    + percepcion_iva
+                    - importe_total_final
                 )
                 > TOLERANCIA,
             ),
@@ -591,6 +604,12 @@ class EmailProcessor:
                     actor="System/Validator",
                 )
 
+                tipo_factura = "FA" if data_agent.get("tipo_factura") == "factura A" else (
+                    "FB" if data_agent.get("tipo_factura") == "factura B" else (
+                        "FC" if data_agent.get("tipo_factura") == "factura C" else None
+                    )
+                )
+
                 invoice_extracted = InvoicesExtractedEmails(
                     cuit=cuit,
                     ids_operadores=operadores_ids,
@@ -613,6 +632,7 @@ class EmailProcessor:
                     descuento_control=data_agent.get("descuento"),
                     total_sin_iva_control=data_agent.get("total_sin_iva"),
                     total_control=data_agent.get("importe_total_final"),
+                    voucher=tipo_factura,
                 )
 
                 services = []
@@ -664,6 +684,7 @@ class EmailProcessor:
                 self.logger.error(
                     f"Error inesperado durante el procesamiento del correo {self.msg_id}: {e}"
                 )
+                error_reason = f"{type(e).__name__}: {e}"
                 invoice_case = InvoiceCases(
                     email=self.email_id,
                     attachment_hash=attachment_hash if attachment_hash else None,
@@ -671,7 +692,7 @@ class EmailProcessor:
                     operator_cuit=cuit if cuit else None,
                     operator_id=operadores_ids[0] if operadores_ids else None,
                     state=FacturasState.ERROR,
-                    state_reason=e,
+                    state_reason=error_reason,
                     extraction_method="Bedrock",
                 )
                 

@@ -55,6 +55,7 @@ class InvoicesExtractedEmails(Base):
     descuento_control = Column(Numeric(precision=12, scale=2))
     total_sin_iva_control = Column(Numeric(precision=12, scale=2))
     total_control = Column(Numeric(precision=12, scale=2))
+    voucher = Column(Text)
     case_id = Column(UUID(as_uuid=True), ForeignKey("facturas_bot.invoice_cases.case_id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

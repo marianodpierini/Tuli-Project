@@ -13,6 +13,7 @@ from database.models import (
     InvoiceCases,
     InvoiceTransitions,
     ServicesExtractedEmails,
+    PercepcionesIIBB,
 )
 
 from .reprocess_invoice.reprocess_invoice import ReprocessInvoice
@@ -273,6 +274,8 @@ class RequestHandler:
                     IncomingEmails.sender,
                     IncomingEmails.received_at,
                     IncomingEmails.subject,
+                    PercepcionesIIBB.monto,
+                    PercepcionesIIBB.provincia,
                 )
                 .join(
                     InvoiceCases,
@@ -282,6 +285,11 @@ class RequestHandler:
                 .join(
                     InvoiceTransitions,
                     InvoiceCases.case_id == InvoiceTransitions.case_id,
+                )
+                .join(
+                    PercepcionesIIBB,
+                    InvoicesExtractedEmails.id == PercepcionesIIBB.invoice_id,
+
                 )
                 .filter(InvoiceCases.state == estado)
                 .options(joinedload(InvoicesExtractedEmails.services))
@@ -313,45 +321,52 @@ class RequestHandler:
             results = query.all()
             items = []
 
-            for iee, state, sender, received_at, subject in results:
+            for iee, state, sender, received_at, subject, monto, provincia in results:
                 reservas_por_id = {}
                 for service in iee.services:
                     reserva_id = service.id_reserva_mo
                     if reserva_id not in reservas_por_id:
                         reservas_por_id[reserva_id] = {
-                            "id_reserva_mo": reserva_id,
+                            "reserve_id": reserva_id,
                             "importe": service.importe,
                         }
                     else:
                         reservas_por_id[reserva_id]["importe"] += service.importe
 
+                invoice_date = iee.fecha_factura
+
                 invoice_item = {
                     "id_factura": iee.id,
                     "cuit": iee.cuit,
                     "operador": {
-                        "id_operador": (
+                        "operator_aptour_id": (
                             iee.ids_operadores[0] if iee.ids_operadores else None
                         ),
                         "razon_social": iee.razon_social,
                     },
-                    "tipo_comprobante": iee.tipo_comprobante,
+                    "invoice_kind": iee.tipo_comprobante,
                     "numero_factura": iee.numero_factura,
-                    "punto_venta": iee.punto_venta,
-                    "numero_comprobante": iee.numero_comprobante,
-                    "fecha_factura": iee.fecha_factura,
-                    "moneda": iee.moneda,
-                    "cotizacion": iee.cotizacion,
-                    "importe_total": iee.importe_total,
-                    "desglose_impositivo": {
-                        "moneda": "USD",
-                        "exento": 0,
-                        "no_computable": 0,
-                        "gravado_21": 0,
-                        "gravado_105": 0,
-                        "percepcion_iva": 0,
-                        "percepciones_iibb": [
-                            {"provincia": "Buenos Aires", "monto": 0.25}
-                        ],
+                    "branch": iee.punto_venta,
+                    "number": iee.numero_comprobante,
+                    "voucher": iee.voucher,
+                    "invoice_date": invoice_date,
+                    "month": invoice_date.month if invoice_date else None,
+                    "year": invoice_date.year if invoice_date else None,
+                    "currency": iee.moneda,
+                    "cotization": iee.cotizacion,
+                    "total": iee.importe_total,
+                    "cost_center_one": "Aero B",
+                    "cost_center_two": "Tours",
+                    "invoice_amount_attributes": {
+                        "exempt": iee.exento,
+                        "not_computable": iee.no_computable,
+                        "taxable_21": iee.gravado_21,
+                        "taxable_10_5": iee.gravado_105,
+                        "iva_perception": iee.percepcion_iva,
+                    },
+                    "invoice_perceptions_attributes": {
+                        "amount": monto,
+                        "province_id": provincia,
                     },
                     "reservas": list(reservas_por_id.values()),
                 }
