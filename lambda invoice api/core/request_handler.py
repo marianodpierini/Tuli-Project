@@ -325,13 +325,10 @@ class RequestHandler:
                 reservas_por_id = {}
                 for service in iee.services:
                     reserva_id = service.id_reserva_mo
-                    if reserva_id not in reservas_por_id:
-                        reservas_por_id[reserva_id] = {
-                            "reserve_id": reserva_id,
-                            "importe": service.importe,
-                        }
-                    else:
-                        reservas_por_id[reserva_id]["importe"] += service.importe
+                    reservas_por_id[reserva_id] = {
+                        "reserve_id": reserva_id,
+                        "importe": service.importe,
+                    }
 
                 invoice_date = iee.fecha_factura
 
