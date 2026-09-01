@@ -142,7 +142,9 @@ class RequestHandler:
         with SessionLocal() as session:
             try:
                 invoice = (
-                    session.query(InvoicesExtractedEmails).filter_by(id=invoice_id).first()
+                    session.query(InvoicesExtractedEmails)
+                    .filter_by(id=invoice_id)
+                    .first()
                 )
 
                 if not invoice:
@@ -152,7 +154,9 @@ class RequestHandler:
                     }
 
                 invoice_case = (
-                    session.query(InvoiceCases).filter_by(case_id=invoice.case_id).first()
+                    session.query(InvoiceCases)
+                    .filter_by(case_id=invoice.case_id)
+                    .first()
                 )
 
                 if not invoice_case:
@@ -211,7 +215,9 @@ class RequestHandler:
 
             except Exception as e:
                 session.rollback()
-                self.logger.error(f"Error aplicando decision de factura {invoice_id}: {e}")
+                self.logger.error(
+                    f"Error aplicando decision de factura {invoice_id}: {e}"
+                )
                 return {
                     "statusCode": 500,
                     "body": json.dumps(
@@ -289,7 +295,6 @@ class RequestHandler:
                 .join(
                     PercepcionesIIBB,
                     InvoicesExtractedEmails.id == PercepcionesIIBB.invoice_id,
-
                 )
                 .filter(InvoiceCases.state == estado)
                 .options(joinedload(InvoicesExtractedEmails.services))
@@ -361,10 +366,12 @@ class RequestHandler:
                         "taxable_10_5": iee.gravado_105,
                         "iva_perception": iee.percepcion_iva,
                     },
-                    "invoice_perceptions_attributes": {
-                        "amount": monto,
-                        "province_id": provincia,
-                    },
+                    "invoice_perceptions_attributes": [
+                        {
+                            "amount": monto,
+                            "province_id": provincia,
+                        }
+                    ],
                     "reservas": list(reservas_por_id.values()),
                 }
                 items.append(invoice_item)
@@ -687,12 +694,9 @@ class RequestHandler:
                     current_reason = invoice_case.state_reason or ""
                     expected_reason = normalized_reason or ""
 
-                    if (
-                        invoice_case.state == target_state
-                        and (
-                            target_state != "LOAD_FAILED"
-                            or current_reason == expected_reason
-                        )
+                    if invoice_case.state == target_state and (
+                        target_state != "LOAD_FAILED"
+                        or current_reason == expected_reason
                     ):
                         item_result.update(
                             {
@@ -736,7 +740,9 @@ class RequestHandler:
 
                 except Exception as e:
                     session.rollback()
-                    self.logger.error(f"Error procesando acuse para factura {invoice_id}: {e}")
+                    self.logger.error(
+                        f"Error procesando acuse para factura {invoice_id}: {e}"
+                    )
                     item_result.update(
                         {
                             "status_code": 500,
@@ -908,7 +914,9 @@ class RequestHandler:
             if state_filters:
                 query = query.filter(InvoiceCases.state.in_(state_filters))
 
-            total_items_query = session.query(func.count(InvoicesExtractedEmails.id)).join(
+            total_items_query = session.query(
+                func.count(InvoicesExtractedEmails.id)
+            ).join(
                 InvoiceCases,
                 InvoicesExtractedEmails.case_id == InvoiceCases.case_id,
             )
@@ -933,7 +941,9 @@ class RequestHandler:
                 items.append(
                     {
                         "id_factura": row.id_factura,
-                        "case_id": str(row.case_id) if row.case_id is not None else None,
+                        "case_id": (
+                            str(row.case_id) if row.case_id is not None else None
+                        ),
                         "state": row.state,
                         "state_reason": row.state_reason,
                         "razon_social": row.razon_social,

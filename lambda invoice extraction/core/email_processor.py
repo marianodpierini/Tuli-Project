@@ -165,36 +165,63 @@ class PdfBedrockExtractor:
             return None, total_tokens
 
         extraction_prompt = """
-            Analizá esta factura.
-            Extraé:
-            - cuit Ejemplo: C.U.I.T. Nº : 33-54799242-9 (excluir cuit AERO 30-70736214-2)
-            - numero_factura
-            - fecha (YYYY-MM-DD)
-            - moneda
-            - importe_total_final
-            - tipo_comprobante (factura / nota de débito / nota de crédito)
-            - tipo de factura (factura A / factura B / factura C)
-            - cotizacion (si la moneda es distinta a ARS) (El texto donde aparece es este 'A efectos contables e impositivos el tipo de cambio de esta factura es  $ 1385')
-            - Subtotal (valor numerico decimal)
-            - Descuento (valor numerico decimal)
-            - Total sin I.V.A (valor numerico decimal)
-            - I.V.A 21% (valor numerico decimal)
-            - Percepcion IIBB (valor numerico decimal)
-            - No computable
-            - Gravado 21
-            - Gravado 105
-            - Percepcion I.V.A
-            - servicios:
-                - voucher
-                - producto
-                - nombre_del_viajero
-                - desc (descuento valor numerico decimal)
-                - importe
-            IMPORTANTE:
-            - Respetar la estructura visual de la tabla
-            - Asociar correctamente cada importe con su pasajero
-            - NO mezclar columnas
-            - Devolver SOLO JSON válido
+            Analiza esta factura y devuelve SOLO un JSON valido, sin texto adicional.
+
+            Devuelve exactamente estas claves (snake_case):
+            {
+                "cuit": "",
+                "numero_factura": "",
+                "fecha": "YYYY-MM-DD",
+                "moneda": "",
+                "importe_total_final": 0.0,
+                "tipo_comprobante": "factura|nota de debito|nota de credito",
+                "tipo_factura": "factura A|factura B|factura C|null",
+                "cotizacion": 0.0,
+                "subtotal": 0.0,
+                "descuento": 0.0,
+                "total_sin_iva": 0.0,
+                "iva_21": 0.0,
+                "percepcion_iibb_texto": "",
+                "percepcion_iibb": 0.0,
+                "no_computable": 0.0,
+                "gravado_21": 0.0,
+                "gravado_105": 0.0,
+                "percepcion_iva": 0.0,
+                "servicios": [
+                    {
+                        "voucher": "",
+                        "producto": "",
+                        "nombre_del_viajero": "",
+                        "desc": 0.0,
+                        "importe": 0.0
+                    }
+                ]
+            }
+
+            Reglas de extraccion:
+            - cuit: tomar CUIT del emisor/proveedor de la factura (ejemplo: "C.U.I.T. N°: 33-54799242-9").
+            - Nunca usar el CUIT del cliente/comprador/receptor (por ejemplo AERO 30-70736214-2).
+            - numero_factura: formato punto de venta-numero (ejemplo 0080-00322758).
+            - fecha: usar la fecha de emision de factura, no vencimiento.
+            - moneda: ARS o USD segun simbolo/leyenda.
+            - cotizacion: si la moneda es distinta de ARS, tomar el tipo de cambio del texto
+              "A efectos contables e impositivos el tipo de cambio...". Si no existe, usar 0.
+            - percepcion_iibb_texto: devolver el texto exacto del concepto de percepcion IIBB
+              (ejemplo: "Percepcion IIBB BSAS"). Si no aparece, devolver "".
+            - Valores numericos: usar punto decimal, sin simbolos de moneda ni separadores de miles.
+            - Si un campo numerico no aparece, usar 0.
+
+            Reglas de tabla de servicios:
+            - Mantener el orden visual de filas.
+            - Cada fila del array servicios debe salir de una unica fila horizontal de la tabla.
+            - No mover importes/descuentos de una fila a otra.
+            - No usar totales del pie (subtotal/total) como importe de una fila.
+            - Si una fila tiene pasajero pero falta importe o desc en esa misma fila, usar 0 en el faltante.
+
+            Validaciones internas antes de responder:
+            - subtotal debe ser igual a la suma de servicios[].importe (tolerancia pequena por redondeo).
+            - total_sin_iva debe ser igual a la suma de servicios[].desc (tolerancia pequena por redondeo).
+            - importe_total_final debe coincidir con el total final informado.
         """
         extraction_content = [
             {
@@ -661,10 +688,23 @@ class EmailProcessor:
                 invoice_extracted.services = services
                 invoice_extracted.case = invoice_case
 
+                id_provincia = None
+                percepcion_texto = (data_agent.get("percepcion_iibb_texto") or "").strip()
+                percepciones_config = (
+                    operadores[0].get("percepciones_config", {}) if operadores else {}
+                )
+                if percepcion_texto and percepciones_config:
+                    texto_norm = percepcion_texto.casefold()
+                    for key, value in percepciones_config.items():
+                        if texto_norm == str(key).strip().casefold():
+                            id_provincia = value
+                            break
+
                 percepcion_record = PercepcionesIIBB(
                     invoice=invoice_extracted,
                     provincia="Buenos Aires",
                     monto=data_agent.get("percepcion_iibb"),
+                    id_provincia=id_provincia,
                 )
 
                 attachments_data_for_db.append(

@@ -178,6 +178,7 @@ class PercepcionesIIBB(Base):
     )
     provincia = Column(Text)
     monto = Column(Numeric(precision=12, scale=2))
+    id_provincia = Column(Integer)
     created_at = Column(DateTime, server_default=func.now())
 
     invoice = relationship("InvoicesExtractedEmails", back_populates="percepciones_iibb")
