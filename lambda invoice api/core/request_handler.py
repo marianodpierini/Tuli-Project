@@ -282,6 +282,7 @@ class RequestHandler:
                     IncomingEmails.subject,
                     PercepcionesIIBB.monto,
                     PercepcionesIIBB.provincia,
+                    PercepcionesIIBB.id_provincia,
                 )
                 .join(
                     InvoiceCases,
@@ -326,7 +327,7 @@ class RequestHandler:
             results = query.all()
             items = []
 
-            for iee, state, sender, received_at, subject, monto, provincia in results:
+            for iee, state, sender, received_at, subject, monto, provincia, id_provincia in results:
                 reservas_por_id = {}
                 for service in iee.services:
                     reserva_id = service.id_reserva_mo
@@ -369,7 +370,7 @@ class RequestHandler:
                     "invoice_perceptions_attributes": [
                         {
                             "amount": monto,
-                            "province_id": provincia,
+                            "province_id": id_provincia,
                         }
                     ],
                     "reservas": list(reservas_por_id.values()),
@@ -412,17 +413,6 @@ class RequestHandler:
         service_updates = body.get("services", [])
         reason_change = body.get("reason", "")
 
-        if state not in LIST_STATES:
-            return {
-                "statusCode": 400,
-                "body": json.dumps(
-                    {
-                        "error": "Estado inválido",
-                        "details": f"El estado '{state}' no es válido. Estados válidos: {LIST_STATES}",
-                    }
-                ),
-            }
-
         if state is None and operator_id is None and not service_updates:
             return {
                 "statusCode": 400,
@@ -430,6 +420,17 @@ class RequestHandler:
                     {
                         "error": "No hay campos para actualizar",
                         "details": "Enviar al menos uno de: state, operator_id o services",
+                    }
+                ),
+            }
+
+        if state is not None and state not in LIST_STATES:
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Estado inválido",
+                        "details": f"El estado '{state}' no es válido. Estados válidos: {LIST_STATES}",
                     }
                 ),
             }
@@ -490,6 +491,7 @@ class RequestHandler:
                         service_invoice.id_operador = operator_id
 
                 updated_services = 0
+                list_services_updated = []
                 if service_updates:
                     for service_data in service_updates:
                         service_id = service_data.get("id")
@@ -509,8 +511,35 @@ class RequestHandler:
                         service.id_servicio = service_data.get("id_servicio")
                         service.id_reserva_mo = service_data.get("id_reserva_mo")
                         updated_services += 1
+                        list_services_updated.append({
+                            "id": service.id,
+                            "codigo": service.codigo,
+                            "pasajero": service.pasajero,
+                            "importe": service.importe,
+                            "vinculado": service.vinculado,
+                            "id_servicio": service.id_servicio,
+                            "id_reserva_aptour": service.id_reserva_aptour,
+                            "id_reserva_mo": service.id_reserva_mo,
+                            "id_operador": service.id_operador,
+                            "ya_facturado": service.ya_facturado,
+                        })
 
                 session.commit()
+
+                response = {
+                    "cuit": invoice.cuit,
+                    "numero_factura": invoice.numero_factura,
+                    "fecha_factura": invoice.fecha_factura,
+                    "razon_social": invoice.razon_social,
+                    "moneda": invoice.moneda,
+                    "importe_total": invoice.importe_total,
+                    "tipo_comprobante": invoice.tipo_comprobante,
+                    "punto_venta": invoice.punto_venta,
+                    "numero_comprobante": invoice.numero_comprobante,
+                    "cotizacion": invoice.cotizacion,
+                    "estado_procesamiento": state,
+                    "servicios": list_services_updated
+                }
 
                 return {
                     "statusCode": 200,
@@ -998,10 +1027,24 @@ class RequestHandler:
                 session.query(
                     InvoicesExtractedEmails,
                     InvoiceCases.state,
+                    InvoiceCases.state_reason,
+                    InvoiceCases.case_id,
+                    InvoiceCases.created_at,
+                    IncomingEmails.sender,
+                    IncomingEmails.subject,
+                    IncomingEmails.received_at,
+                    PercepcionesIIBB.id_provincia,
+                    PercepcionesIIBB.provincia,
+                    PercepcionesIIBB.monto,
                 )
                 .join(
                     InvoiceCases,
                     InvoicesExtractedEmails.case_id == InvoiceCases.case_id,
+                )
+                .join(IncomingEmails, IncomingEmails.email_id == InvoiceCases.email_id)
+                .join(
+                    PercepcionesIIBB,
+                    InvoicesExtractedEmails.id == PercepcionesIIBB.invoice_id,
                 )
                 .filter(InvoicesExtractedEmails.id == invoice_id)
                 .options(joinedload(InvoicesExtractedEmails.services))
@@ -1009,10 +1052,15 @@ class RequestHandler:
             )
 
             results = query.all()
+            invoice_item = None
 
-            for iee, state in results:
+            for iee, state, state_reason, case_id, created_at, sender, subject, received_at, id_provincia, provincia, monto in results:
                 invoice_item = {
+                    "id_factura": iee.id,
+                    "case_id": case_id,
                     "cuit": iee.cuit,
+                    "state_reason": state_reason,
+                    "created_at": created_at,
                     "numero_factura": iee.numero_factura,
                     "fecha_factura": iee.fecha_factura,
                     "razon_social": iee.razon_social,
@@ -1023,11 +1071,33 @@ class RequestHandler:
                     "numero_comprobante": iee.numero_comprobante,
                     "cotizacion": iee.cotizacion,
                     "estado_procesamiento": state,
+                    "email": {
+                        "remitente": sender,
+                        "asunto": subject,
+                        "recibido": received_at,
+                    },
+                    "desgloce_impositivo": {
+                        "moneda": iee.moneda,
+                        "exento": iee.exento,
+                        "no_computable": iee.no_computable,
+                        "gravado_21": iee.gravado_21,
+                        "gravado_105": iee.gravado_105,
+                        "percepcion_iva": iee.percepcion_iva,
+                        "percepciones_iibb": [
+                            {
+                                "provincia": provincia,
+                                "monto": monto,
+                                "id_provincia": id_provincia,
+                            }
+                        ]
+                    },
                     "servicios": [
                         {
+                            "id": s.id,
                             "codigo": s.codigo,
                             "pasajero": s.pasajero,
                             "importe": s.importe,
+                            "desc_neto": s.desc_neto,
                             "vinculado": s.vinculado,
                             "id_servicio": s.id_servicio,
                             "id_reserva_aptour": s.id_reserva_aptour,
@@ -1037,6 +1107,13 @@ class RequestHandler:
                         }
                         for s in iee.services
                     ],
+                }
+
+            if invoice_item is None:
+                return {
+                    "statusCode": 404,
+                    "headers": {"Content-Type": "application/json"},
+                    "body": json.dumps({"item": {}}, cls=CustomJSONEncoder),
                 }
 
             return {
