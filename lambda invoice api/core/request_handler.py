@@ -293,7 +293,7 @@ class RequestHandler:
                     InvoiceTransitions,
                     InvoiceCases.case_id == InvoiceTransitions.case_id,
                 )
-                .join(
+                .outerjoin(
                     PercepcionesIIBB,
                     InvoicesExtractedEmails.id == PercepcionesIIBB.invoice_id,
                 )
@@ -336,6 +336,12 @@ class RequestHandler:
                         "importe": service.importe,
                     }
 
+                monto_default = monto if monto is not None else 0.0
+                provincia_default = provincia if provincia is not None else ""
+                id_provincia_default = (
+                    id_provincia if id_provincia is not None else 0
+                )
+
                 invoice_date = iee.fecha_factura
 
                 invoice_item = {
@@ -369,8 +375,9 @@ class RequestHandler:
                     },
                     "invoice_perceptions_attributes": [
                         {
-                            "amount": monto,
-                            "province_id": id_provincia,
+                            "amount": monto_default,
+                            "province": provincia_default,
+                            "province_id": id_provincia_default,
                         }
                     ],
                     "reservas": list(reservas_por_id.values()),
