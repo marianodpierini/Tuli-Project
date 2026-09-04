@@ -1,4 +1,12 @@
 import re
+from datetime import date, timedelta
+from sqlalchemy import or_
+from database.db import SessionLocal
+from database.models import (
+    PMysqlPagoproveedoresproductionInvoices,
+    PMysqlProductionmotoursReserves,
+    SMysqlProductionmotoursServices,
+)
 from core.parser_helpers.parser_functions import PARSERS_DICT
 
 class InvoicesValidation:
@@ -31,83 +39,128 @@ class InvoicesValidation:
         return codigo
 
     def buscar_servicios(self, codigos):
-        """Searches for services in the database based on confirmation codes and operator IDs."""
-        try:
-            self.logger.info(f"Buscando servicios para códigos: {codigos} y operadores: {self.operator_ids}")
-            with self.conn_mysql.cursor() as cursor:
-                placeholders_op = ",".join(["%s"] * len(self.operator_ids))
-
-                condiciones_codigo = " OR ".join(
-                    ["s.confirmation_code LIKE %s"] * len(codigos)
-                )
-
-                query = f"""
-                    SELECT s.id, s.confirmation_code, s.reserve_id, s.aptour_reserve_id,
-                        s.date_in, s.balance, s.operator_id, s.operator_name
-                    FROM production_mo_tours.services s
-                    LEFT JOIN production_mo_tours.reserves r ON r.id = s.reserve_id
-                    WHERE s.operator_id IN ({placeholders_op})
-                    AND (s.balance > 0 OR s.balance IS NULL)
-                    AND s.date_in >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-                    AND s.date_in <= DATE_ADD(NOW(), INTERVAL 11 MONTH)
-                    AND ({condiciones_codigo})
-                    LIMIT 50
-                """
-
-                params = self.operator_ids + [f"%{self.normalizar_codigo(codigo)}%" for codigo in codigos]
-
-                cursor.execute(query, params)
-
-                rows = cursor.fetchall()
-
-                indice = {}
-
-                for row in rows:
-                    codigos_en_campo = re.split(
-                        r"[\s,;\/]+", row["confirmation_code"] or ""
+            """Searches for services in the database based on confirmation codes and operator IDs."""
+            try:
+                self.logger.info(f"Buscando servicios para códigos: {codigos} y operadores: {self.operator_ids}")
+                codigos_normalizados = [
+                    self.normalizar_codigo(codigo)
+                    for codigo in codigos
+                    if codigo
+                ]
+    
+                if not self.operator_ids or not codigos_normalizados:
+                    return {}
+    
+                fecha_hoy = date.today()
+                fecha_min = fecha_hoy - timedelta(days=183)
+                fecha_max = fecha_hoy + timedelta(days=335)
+    
+                condiciones_codigo = [
+                    SMysqlProductionmotoursServices.confirmation_code.ilike(f"%{codigo}%")
+                    for codigo in codigos_normalizados
+                ]
+    
+                with SessionLocal() as session:
+                    rows = (
+                        session.query(
+                            SMysqlProductionmotoursServices.id.label("id"),
+                            SMysqlProductionmotoursServices.confirmation_code.label("confirmation_code"),
+                            SMysqlProductionmotoursServices.reserve_id.label("reserve_id"),
+                            SMysqlProductionmotoursServices.aptour_reserve_id.label("aptour_reserve_id"),
+                            SMysqlProductionmotoursServices.date_in.label("date_in"),
+                            SMysqlProductionmotoursServices.balance.label("balance"),
+                            SMysqlProductionmotoursServices.operator_id.label("operator_id"),
+                            SMysqlProductionmotoursServices.operator_name.label("operator_name"),
+                        )
+                        .outerjoin(
+                            PMysqlProductionmotoursReserves,
+                            PMysqlProductionmotoursReserves.id == SMysqlProductionmotoursServices.reserve_id,
+                        )
+                        .filter(SMysqlProductionmotoursServices.operator_id.in_(self.operator_ids))
+                        .filter(
+                            or_(
+                                SMysqlProductionmotoursServices.balance > 0,
+                                SMysqlProductionmotoursServices.balance.is_(None),
+                            )
+                        )
+                        .filter(SMysqlProductionmotoursServices.date_in >= fecha_min)
+                        .filter(SMysqlProductionmotoursServices.date_in <= fecha_max)
+                        .filter(or_(*condiciones_codigo))
+                        .all()
                     )
-
+    
+                indice = {}
+                rows_log = []
+    
+                for row in rows:
+                    row_dict = {
+                        "id": row.id,
+                        "confirmation_code": row.confirmation_code,
+                        "reserve_id": row.reserve_id,
+                        "aptour_reserve_id": row.aptour_reserve_id,
+                        "date_in": row.date_in,
+                        "balance": row.balance,
+                        "operator_id": row.operator_id,
+                        "operator_name": row.operator_name,
+                    }
+                    rows_log.append(row_dict)
+    
+                    codigos_en_campo = re.split(
+                        r"[\s,;\/]+", row_dict["confirmation_code"] or ""
+                    )
+    
                     for cod in codigos_en_campo:
                         cod = cod.strip()
                         if not cod:
                             continue
-
+    
                         if cod not in indice:
-                            indice[cod] = row
-                            
-                self.logger.info(f"Servicios encontrados: {rows}")
+                            indice[cod] = row_dict
+    
+                self.logger.info(f"Servicios encontrados: {rows_log}")
                 return indice
-
-        except Exception as e:
-            self.logger.error(f"Error al buscar servicios: {e}")
-            return {}
+    
+            except Exception as e:
+                self.logger.error(f"Error al buscar servicios: {e}")
+                return {}
 
     def verificar_facturas(self, reserve_ids):
-        self.logger.info(f"Verificando facturas para reservas: {reserve_ids}")
-        try:
-            with self.conn_mysql.cursor() as cursor:
-                placeholders = ",".join(["%s"] * len(reserve_ids))
-
-                query = f"""
-                    SELECT reserve_id, CONCAT(branch, "-", number) as factura
-                    FROM pago_proveedores_production.invoices
-                    WHERE reserve_id IN ({placeholders})
-                """
-
-                cursor.execute(query, reserve_ids)
-
+            self.logger.info(f"Verificando facturas para reservas: {reserve_ids}")
+            try:
+                reserve_ids_validos = [rid for rid in reserve_ids if rid is not None]
+    
+                if not reserve_ids_validos:
+                    return {}
+    
+                with SessionLocal() as session:
+                    rows = (
+                        session.query(
+                            PMysqlPagoproveedoresproductionInvoices.reserve_id.label("reserve_id"),
+                            PMysqlPagoproveedoresproductionInvoices.branch.label("branch"),
+                            PMysqlPagoproveedoresproductionInvoices.number.label("number"),
+                        )
+                        .filter(
+                            PMysqlPagoproveedoresproductionInvoices.reserve_id.in_(reserve_ids_validos)
+                        )
+                        .all()
+                    )
+    
                 result = {}
-
-                for row in cursor.fetchall():
-                    result[row["reserve_id"]] = row["factura"]
-
-                
+    
+                for row in rows:
+                    if row.reserve_id is None:
+                        continue
+    
+                    branch = row.branch or ""
+                    number = row.number or ""
+                    result[row.reserve_id] = f"{branch}-{number}" if branch or number else ""
+    
                 self.logger.info(f"Facturas encontradas para reservas: {result}")
                 return result
-
-        except Exception as e:
-            self.logger.error(f"Error al verificar facturas: {e}")
-            return {}
+    
+            except Exception as e:
+                self.logger.error(f"Error al verificar facturas: {e}")
+                return {}
 
     def vincular_servicios(self):
         servicios = self.data_agent.get("servicios", [])

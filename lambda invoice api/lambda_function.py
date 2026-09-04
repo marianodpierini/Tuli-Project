@@ -90,6 +90,8 @@ def lambda_handler(event, context):
             return _with_cors(request_handler.handle_get_invoice())
         if resource == "/invoices/meta" and method == "GET":
             return _with_cors(request_handler.handle_get_meta())
+        if resource == "/reservas" and method == "GET":
+            return _with_cors(request_handler.handle_list_reservas())
 
         return _response(
             405,

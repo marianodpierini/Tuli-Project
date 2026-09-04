@@ -20,7 +20,6 @@ from database.models import (
     PercepcionesIIBB,
 )
 from core.invoices_validation import InvoicesValidation
-from database.db_mysql import get_connection
 
 from sqlalchemy.exc import IntegrityError
 
@@ -574,35 +573,27 @@ class EmailProcessor:
                     extraction_method="Bedrock",
                 )
 
-                conn_mysql = get_connection()
-                conn_mysql.ping(reconnect=True)
-                try:
-                    invoice_validator = InvoicesValidation(
-                        data_agent, operadores, conn_mysql, self.logger
+                invoice_validator = InvoicesValidation(
+                    data_agent, operadores, conn_mysql, self.logger
+                )
+                data_agent, needs_retry = invoice_validator.vincular_servicios()
+
+                if needs_retry:
+                    self.logger.info(
+                        f"Iniciando reintento con agente potente ({MODEL_POWERFUL}) para {filename}"
                     )
-                    data_agent, needs_retry = invoice_validator.vincular_servicios()
-
-                    if needs_retry:
-                        self.logger.info(
-                            f"Iniciando reintento con agente potente ({MODEL_POWERFUL}) para {filename}"
+                    data_agent_retry, tokens_retry = (
+                        self.pdf_extractor.extract_invoice_data(
+                            file_bytes, model_id=MODEL_POWERFUL
                         )
-                        data_agent_retry, tokens_retry = (
-                            self.pdf_extractor.extract_invoice_data(
-                                file_bytes, model_id=MODEL_POWERFUL
-                            )
-                        )
-                        total_tokens_email += tokens_retry
+                    )
+                    total_tokens_email += tokens_retry
 
-                        if data_agent_retry:
-                            invoice_validator = InvoicesValidation(
-                                data_agent_retry, operadores, conn_mysql, self.logger
-                            )
-                            data_agent, needs_retry = invoice_validator.vincular_servicios()
-                finally:
-                    try:
-                        conn_mysql.close()
-                    except Exception:
-                        pass
+                    if data_agent_retry:
+                        invoice_validator = InvoicesValidation(
+                            data_agent_retry, operadores, conn_mysql, self.logger
+                        )
+                        data_agent, needs_retry = invoice_validator.vincular_servicios()
 
                 old_state = invoice_case.state
                 servicios = data_agent.get("servicios", [])

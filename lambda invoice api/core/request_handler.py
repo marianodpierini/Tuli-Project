@@ -2,9 +2,10 @@ import json
 import boto3
 import os
 from decimal import Decimal
+from datetime import date, timedelta
 from urllib.parse import unquote_plus
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import joinedload
 from database.db import SessionLocal
 from database.models import (
@@ -14,6 +15,9 @@ from database.models import (
     InvoiceTransitions,
     ServicesExtractedEmails,
     PercepcionesIIBB,
+    PMysqlProductionmotoursReserves,
+    PMysqlPagoproveedoresproductionInvoices,
+    SMysqlProductionmotoursServices,
 )
 
 from .reprocess_invoice.reprocess_invoice import ReprocessInvoice
@@ -407,6 +411,218 @@ class RequestHandler:
                 "statusCode": 500,
                 "body": json.dumps(
                     {"error": "Error consultando facturas", "details": str(e)}
+                ),
+            }
+        finally:
+            session.close()
+
+    def handle_list_reservas(self):
+        query_params = self.event.get("queryStringParameters") or {}
+
+        codigo = (query_params.get("codigo") or "").strip()
+        pasajero = (query_params.get("pasajero") or "").strip()
+        operador_id_raw = (query_params.get("operador_id") or "").strip()
+        page_param = query_params.get("page")
+        limit_param = query_params.get("limit")
+
+        if not codigo and not pasajero:
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Parametros invalidos",
+                        "details": "Debe enviar al menos 'codigo' o 'pasajero'",
+                    }
+                ),
+            }
+
+        try:
+            page = int(page_param) if page_param is not None else 1
+            limit = int(limit_param) if limit_param is not None else 50
+        except (TypeError, ValueError):
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Parametros de paginacion invalidos",
+                        "details": "page y limit deben ser numeros enteros",
+                    }
+                ),
+            }
+
+        if page < 1 or limit < 1:
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Parametros de paginacion invalidos",
+                        "details": "page y limit deben ser mayores o iguales a 1",
+                    }
+                ),
+            }
+
+        limit = min(limit, 200)
+        offset = (page - 1) * limit
+
+        operator_ids = []
+        if operador_id_raw:
+            try:
+                operator_ids = [int(op.strip()) for op in operador_id_raw.split(",") if op.strip()]
+            except ValueError:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {
+                            "error": "Parametro invalido",
+                            "details": "operador_id debe ser entero o lista de enteros separada por coma",
+                        }
+                    ),
+                }
+
+        fecha_hoy = date.today()
+        fecha_min = fecha_hoy - timedelta(days=183)
+        fecha_max = fecha_hoy + timedelta(days=335)
+
+        condiciones_codigo = []
+        if codigo:
+            condiciones_codigo = [
+                SMysqlProductionmotoursServices.confirmation_code.ilike(f"%{codigo}%")
+            ]
+
+        session = SessionLocal()
+        try:
+            base_query = (
+                session.query(
+                    SMysqlProductionmotoursServices.id.label("id"),
+                    SMysqlProductionmotoursServices.confirmation_code.label("confirmation_code"),
+                    SMysqlProductionmotoursServices.reserve_id.label("reserve_id"),
+                    SMysqlProductionmotoursServices.aptour_reserve_id.label("aptour_reserve_id"),
+                    SMysqlProductionmotoursServices.date_in.label("date_in"),
+                    SMysqlProductionmotoursServices.balance.label("balance"),
+                    SMysqlProductionmotoursServices.operator_id.label("operator_id"),
+                    SMysqlProductionmotoursServices.operator_name.label("operator_name"),
+                )
+                .outerjoin(
+                    PMysqlProductionmotoursReserves,
+                    PMysqlProductionmotoursReserves.id == SMysqlProductionmotoursServices.reserve_id,
+                )
+            )
+
+            if operator_ids:
+                base_query = base_query.filter(
+                    SMysqlProductionmotoursServices.operator_id.in_(operator_ids)
+                )
+
+            base_query = (
+                base_query
+                .filter(
+                    or_(
+                        SMysqlProductionmotoursServices.balance > 0,
+                        SMysqlProductionmotoursServices.balance.is_(None),
+                    )
+                )
+                .filter(SMysqlProductionmotoursServices.date_in >= fecha_min)
+                .filter(SMysqlProductionmotoursServices.date_in <= fecha_max)
+            )
+
+            if condiciones_codigo:
+                base_query = base_query.filter(or_(*condiciones_codigo))
+
+            if pasajero:
+                base_query = base_query.filter(
+                    SMysqlProductionmotoursServices.name.ilike(f"%{pasajero}%")
+                )
+
+            total_items = base_query.count()
+            total_pages = (total_items + limit - 1) // limit if total_items else 0
+
+            rows = (
+                base_query
+                .order_by(SMysqlProductionmotoursServices.id.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+
+            reserve_ids_validos = list({row.reserve_id for row in rows if row.reserve_id is not None})
+
+            currency_by_reserve = {}
+            if reserve_ids_validos:
+                reserve_rows = (
+                    session.query(
+                        PMysqlProductionmotoursReserves.id.label("reserve_id"),
+                        PMysqlProductionmotoursReserves.currency.label("currency"),
+                    )
+                    .filter(PMysqlProductionmotoursReserves.id.in_(reserve_ids_validos))
+                    .all()
+                )
+                currency_by_reserve = {
+                    row.reserve_id: row.currency
+                    for row in reserve_rows
+                }
+
+            invoice_rows = []
+            if reserve_ids_validos:
+                invoice_rows = (
+                    session.query(
+                        PMysqlPagoproveedoresproductionInvoices.reserve_id.label("reserve_id"),
+                        PMysqlPagoproveedoresproductionInvoices.branch.label("branch"),
+                        PMysqlPagoproveedoresproductionInvoices.number.label("number"),
+                    )
+                    .filter(
+                        PMysqlPagoproveedoresproductionInvoices.reserve_id.in_(reserve_ids_validos)
+                    )
+                    .all()
+                )
+
+            reserve_ids_facturados = {
+                row.reserve_id
+                for row in invoice_rows
+                if row.reserve_id is not None
+            }
+
+            items = []
+            for row in rows:
+                reserve_id = row.reserve_id
+                items.append(
+                    {
+                        "id_reserva_mo": reserve_id,
+                        "codigo": codigo,
+                        "pasajero": pasajero,
+                        "operador": row.operator_name,
+                        "fecha": row.date_in,
+                        "balance": row.balance,
+                        "moneda": currency_by_reserve.get(reserve_id),
+                        "ya_facturado": reserve_id in reserve_ids_facturados,
+                        "id_servicio": row.id,
+                        "id_reserva_aptour": row.aptour_reserve_id,
+                        "id_operador": row.operator_id,
+                    }
+                )
+
+            response_body = {
+                "items": items,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total_items": total_items,
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_previous": page > 1,
+                },
+            }
+
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(response_body, cls=CustomJSONEncoder),
+            }
+        except Exception as e:
+            self.logger.error(f"Error consultando reservas: {e}")
+            return {
+                "statusCode": 500,
+                "body": json.dumps(
+                    {"error": "Error consultando reservas", "details": str(e)}
                 ),
             }
         finally:

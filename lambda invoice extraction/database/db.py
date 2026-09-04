@@ -21,7 +21,7 @@ def get_engine():
         conn_str,
         pool_pre_ping=True,
         pool_size=10,
-        connect_args={"options": "-csearch_path=facturas_bot"},
+        connect_args={"options": "-csearch_path=facturas_bot,public"},
     )
 
 
