@@ -14,11 +14,10 @@ from database.models import (
 
 class InvoicesValidation:
     """Validates and enriches extracted invoice data by linking services and checking for existing invoices."""
-    def __init__(self, data_agent, operadores, conn_mysql, logger):
+    def __init__(self, data_agent, operadores, logger):
         self.data_agent = data_agent
         self.operadores = operadores
         self.operator_ids = [op["id"] for op in operadores]
-        self.conn_mysql = conn_mysql
         self.logger = logger
 
     def normalizar_codigo(self, codigo: str) -> str:

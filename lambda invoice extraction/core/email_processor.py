@@ -59,6 +59,10 @@ class StateReason(str, Enum):
     REMITENTE_NO_COINCIDE = "REMITENTE_NO_COINCIDE"
     EXTENSION_INVALIDA = "EXTENSION_INVALIDA"
     FACTURA_DUPLICADA = "FACTURA_DUPLICADA"
+    SERVICIO_SIN_RESERVA = "SERVICIO_SIN_RESERVA"
+    FACTURA_MIXTA = "FACTURA_MIXTA"
+    FECHA_INVALIDA = "FECHA_INVALIDA"
+    YA_FACTURADA = "YA_FACTURADA"
 
 
 class JsonParser:
@@ -574,7 +578,7 @@ class EmailProcessor:
                 )
 
                 invoice_validator = InvoicesValidation(
-                    data_agent, operadores, conn_mysql, self.logger
+                    data_agent, operadores, self.logger
                 )
                 data_agent, needs_retry = invoice_validator.vincular_servicios()
 
@@ -591,27 +595,34 @@ class EmailProcessor:
 
                     if data_agent_retry:
                         invoice_validator = InvoicesValidation(
-                            data_agent_retry, operadores, conn_mysql, self.logger
+                            data_agent_retry, operadores, self.logger
                         )
                         data_agent, needs_retry = invoice_validator.vincular_servicios()
 
                 old_state = invoice_case.state
                 servicios = data_agent.get("servicios", [])
-                if any(not s.get("vinculado") for s in servicios):
+                if all(not s.get("ya_facturado") for s in servicios):
                     state_invoice = FacturasState.EN_REVISION
+                    state_reason = StateReason.SERVICIO_SIN_RESERVA
+                elif any(not s.get("vinculado") for s in servicios):
+                    state_invoice = FacturasState.EN_REVISION
+                    state_reason = StateReason.FACTURA_MIXTA
                 elif servicios and all(s.get("ya_facturado") for s in servicios):
                     state_invoice = FacturasState.YA_FACTURADO
+                    state_reason = StateReason.YA_FACTURADA
                 else:
                     state_invoice = FacturasState.LISTO_PARA_CARGAR
 
                 if self.get_date(data_agent.get("fecha")) > date.today().isoformat():
                     state_invoice = FacturasState.EN_REVISION
+                    state_reason = StateReason.FECHA_INVALIDA
 
                 if self.validar_desglose(data_agent)[0] is False:
                     state_invoice = FacturasState.EN_REVISION
                     invoice_case.state_reason = StateReason.DESGLOCE_NO_CUADRA
 
                 invoice_case.state = state_invoice
+                invoice_case.state_reason = state_reason
 
                 invoice_transition_validation = InvoiceTransitions(
                     case=invoice_case,

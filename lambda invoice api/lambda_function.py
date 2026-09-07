@@ -93,13 +93,6 @@ def lambda_handler(event, context):
         if resource == "/reservas" and method == "GET":
             return _with_cors(request_handler.handle_list_reservas())
 
-        return _response(
-            405,
-            {
-                "error": "Method Not Allowed",
-            },
-        )
-
         return _response(404, {"error": "Not Found"})
 
     except Exception as e:
