@@ -205,12 +205,14 @@ class InvoicesValidation:
                     break
 
             s["vinculado"] = False
+            s["ya_facturado"] = False
+            s["pending"] = False
             encontrado = resultados.get(codigo)
             if not encontrado:
                 s["vinculado"] = False
                 continue
 
-            rid = encontrado.get("aptour_reserve_id")
+            rid = encontrado.get("aptour_reserve_id") or encontrado.get("reserve_id")
             id_reserva_mo = encontrado.get("reserve_id")
 
             s["vinculado"] = True

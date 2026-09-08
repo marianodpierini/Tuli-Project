@@ -71,6 +71,25 @@ class RequestHandler:
     def __init__(self, event, logger):
         self.event = event
         self.logger = logger
+        
+    def _get_actor_email(self):
+        request_context = self.event.get("requestContext") or {}
+        authorizer = request_context.get("authorizer") or {}
+
+        # REST/API Gateway custom authorizer usually injects claims at authorizer level.
+        email = authorizer.get("email")
+
+        # HTTP API Lambda authorizer commonly nests values under authorizer.lambda.
+        if not email and isinstance(authorizer.get("lambda"), dict):
+            email = authorizer["lambda"].get("email")
+
+        if not email and isinstance(authorizer.get("claims"), dict):
+            email = authorizer["claims"].get("email")
+
+        if not isinstance(email, str) or not email.strip():
+            return None
+
+        return email.strip().lower()
 
     def _normalize_invoice_decision(self, raw_decision):
         if not isinstance(raw_decision, str):
@@ -91,6 +110,18 @@ class RequestHandler:
         invoice_id = self.event.get("pathParameters", {}).get("id")
         if invoice_id is None:
             invoice_id = self.event.get("pathParameters", {}).get("id_factura")
+        
+        actor_email = self._get_actor_email()
+        if not actor_email:
+            return {
+                "statusCode": 401,
+                "body": json.dumps(
+                    {
+                        "error": "No autorizado",
+                        "details": "No se encontro email del usuario autenticado",
+                    }
+                ),
+            }
 
         if invoice_id is None:
             return {
@@ -199,7 +230,7 @@ class RequestHandler:
                     from_state=old_state,
                     to_state=target_state,
                     reason=new_reason,
-                    actor="Frontend API",
+                    actor=actor_email,
                 )
                 session.add(invoice_transition)
                 session.commit()
@@ -635,6 +666,18 @@ class RequestHandler:
         operator_id = body.get("operator_id")
         service_updates = body.get("services", [])
         reason_change = body.get("reason", "")
+        
+        actor_email = self._get_actor_email()
+        if not actor_email:
+            return {
+                "statusCode": 401,
+                "body": json.dumps(
+                    {
+                        "error": "No autorizado",
+                        "details": "No se encontro email del usuario autenticado",
+                    }
+                ),
+            }
 
         if state is None and operator_id is None and not service_updates:
             return {
@@ -699,7 +742,7 @@ class RequestHandler:
                         from_state=old_state,
                         to_state=state,
                         reason=reason_change,
-                        actor="Frontend API",
+                        actor=actor_email,
                     )
                     session.add(invoice_transition)
 
@@ -730,8 +773,13 @@ class RequestHandler:
                         if not service:
                             continue
 
-                        service.vinculado = True
-                        service.id_servicio = service_data.get("id_servicio")
+                        CENTINELA = object()
+                        id_servicio = service_data.get("id_servicio", CENTINELA)
+
+                        if id_servicio is not CENTINELA:
+                            service.id_servicio = id_servicio
+
+                        service.vinculado = service.id_servicio is not None
                         service.id_reserva_mo = service_data.get("id_reserva_mo")
                         updated_services += 1
                         list_services_updated.append({

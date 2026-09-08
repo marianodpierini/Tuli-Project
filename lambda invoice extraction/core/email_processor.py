@@ -63,6 +63,7 @@ class StateReason(str, Enum):
     FACTURA_MIXTA = "FACTURA_MIXTA"
     FECHA_INVALIDA = "FECHA_INVALIDA"
     YA_FACTURADA = "YA_FACTURADA"
+    ERROR_EN_PROCESAMIENTO = "ERROR_EN_PROCESAMIENTO"
 
 
 class JsonParser:
@@ -304,7 +305,9 @@ class EmailProcessor:
         self.msg_id = msg_id
         self.email_id = None
         self.json_parser = JsonParser()
-        self.pdf_extractor = PdfBedrockExtractor(bedrock_client, logger, self.json_parser)
+        self.pdf_extractor = PdfBedrockExtractor(
+            bedrock_client, logger, self.json_parser
+        )
         self.s3_manager = S3AttachmentManager(
             s3_client, s3_bucket_destino, msg_id, logger
         )
@@ -450,31 +453,18 @@ class EmailProcessor:
                 self.logger.info(
                     f"No se encontró CUIT asociado al sender {self.msg.get('From')}."
                 )
-                invoice_case = InvoiceCases(
-                    email=self.email_id,
-                    attachment_hash=None,
-                    attachment_name=None,
-                    operator_cuit=None,
-                    operator_id=None,
-                    state=FacturasState.EN_REVISION,
-                    state_reason=StateReason.REMITENTE_NO_COINCIDE,
-                    extraction_method="Bedrock",
-                )
 
-                with self.db_session() as session:
-                    session.add(invoice_case)
-                    session.commit()
-
-                return 0, 0
-
-            attachments_data_for_db = []
         except Exception as e:
             self.logger.error(
                 f"Error inesperado durante la inserción del correo {self.msg_id}: {e}"
             )
-            return 0, 0
 
+        attachments_data_for_db = []
         for part in self.msg.iter_attachments():
+            cuit = None
+            operadores_ids = []
+            attachment_hash = None
+            filename = None
             try:
                 filename = part.get_filename()
                 if not filename:
@@ -485,7 +475,7 @@ class EmailProcessor:
 
                 file_bytes = part.get_payload(decode=True)
                 attachment_hash = hashlib.sha256(file_bytes).hexdigest()
-                
+
                 dest_key = self.s3_manager.upload_attachment(
                     filename, file_bytes, content_type
                 )
@@ -633,11 +623,28 @@ class EmailProcessor:
                     actor="System/Validator",
                 )
 
-                tipo_factura = "FA" if data_agent.get("tipo_factura") == "factura A" else (
-                    "FB" if data_agent.get("tipo_factura") == "factura B" else (
-                        "FC" if data_agent.get("tipo_factura") == "factura C" else None
+                tipo_factura = (
+                    "FA"
+                    if data_agent.get("tipo_factura") == "factura A"
+                    else (
+                        "FB"
+                        if data_agent.get("tipo_factura") == "factura B"
+                        else (
+                            "FC"
+                            if data_agent.get("tipo_factura") == "factura C"
+                            else None
+                        )
                     )
                 )
+
+                numero_factura = (data_agent.get("numero_factura") or "").strip()
+                if numero_factura and "-" in numero_factura:
+                    partes_numero_factura = numero_factura.split("-", 1)
+                    punto_venta = partes_numero_factura[0] or None
+                    numero_comprobante = partes_numero_factura[1] or None
+                else:
+                    punto_venta = None
+                    numero_comprobante = None
 
                 invoice_extracted = InvoicesExtractedEmails(
                     cuit=cuit,
@@ -649,8 +656,8 @@ class EmailProcessor:
                     moneda=data_agent.get("moneda"),
                     importe_total=data_agent.get("importe_total_final"),
                     tipo_comprobante=data_agent.get("tipo_comprobante"),
-                    punto_venta=data_agent.get("numero_factura").split("-")[0],
-                    numero_comprobante=data_agent.get("numero_factura").split("-")[1],
+                    punto_venta=punto_venta,
+                    numero_comprobante=numero_comprobante,
                     cotizacion=data_agent.get("cotizacion"),
                     exento=data_agent.get("total_sin_iva"),
                     no_computable=data_agent.get("no_computable"),
@@ -691,7 +698,9 @@ class EmailProcessor:
                 invoice_extracted.case = invoice_case
 
                 id_provincia = None
-                percepcion_texto = (data_agent.get("percepcion_iibb_texto") or "").strip()
+                percepcion_texto = (
+                    data_agent.get("percepcion_iibb_texto") or ""
+                ).strip()
                 percepciones_config = (
                     operadores[0].get("percepciones_config", {}) if operadores else {}
                 )
@@ -734,12 +743,22 @@ class EmailProcessor:
                     operator_cuit=cuit if cuit else None,
                     operator_id=operadores_ids[0] if operadores_ids else None,
                     state=FacturasState.ERROR,
-                    state_reason=error_reason,
+                    state_reason=StateReason.ERROR_EN_PROCESAMIENTO,
                     extraction_method="Bedrock",
                 )
-                
+
+                invoice_transition_validation_error = InvoiceTransitions(
+                    case=invoice_case,
+                    from_state=FacturasState.RECIBIDO,
+                    to_state=FacturasState.ERROR,
+                    reason="Validación de servicios y vinculación.",
+                    metadata_={error_reason},
+                    actor="System/Validator",
+                )
+
                 with self.db_session() as session:
                     session.add(invoice_case)
+                    session.add(invoice_transition_validation_error)
                     session.commit()
 
                 continue
@@ -796,7 +815,9 @@ class EmailProcessor:
                                 original_case.attachment_hash if original_case else None
                             ),
                             attachment_name=(
-                                original_case.attachment_name if original_case else filename
+                                original_case.attachment_name
+                                if original_case
+                                else filename
                             ),
                             operator_cuit=(
                                 original_case.operator_cuit if original_case else None
@@ -816,7 +837,9 @@ class EmailProcessor:
                         duplicate_transition = InvoiceTransitions(
                             case=duplicate_case,
                             from_state=(
-                                original_case.state if original_case else FacturasState.RECIBIDO
+                                original_case.state
+                                if original_case
+                                else FacturasState.RECIBIDO
                             ),
                             to_state=FacturasState.DUPLICADO,
                             reason=StateReason.FACTURA_DUPLICADA,
@@ -843,13 +866,14 @@ class EmailProcessor:
                 final_state = EmailsState.ERROR
 
             processing_time_ms = int((time.perf_counter() - start_time) * 1000)
-            self.logger.info(f"Procesamiento finalizado para {self.msg_id}. Tiempo: {processing_time_ms}ms, Tokens: {total_tokens_email}")
+            self.logger.info(
+                f"Procesamiento finalizado para {self.msg_id}. Tiempo: {processing_time_ms}ms, Tokens: {total_tokens_email}"
+            )
 
-            session.query(IncomingEmails).filter(IncomingEmails.message_id == self.msg_id).update({
-                IncomingEmails.processing_state: final_state
-            })
-            
+            session.query(IncomingEmails).filter(
+                IncomingEmails.message_id == self.msg_id
+            ).update({IncomingEmails.processing_state: final_state})
+
             session.commit()
-                    
 
         return processing_time_ms, total_tokens_email
