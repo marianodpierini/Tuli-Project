@@ -107,7 +107,7 @@ class RequestHandler:
         return None
 
     def handle_invoice_decision(self):
-        invoice_id = self.event.get("pathParameters", {}).get("id")
+        invoice_id = self.event.get("pathParameters", {}).get("id_factura")
         if invoice_id is None:
             invoice_id = self.event.get("pathParameters", {}).get("id_factura")
         
