@@ -192,7 +192,7 @@ class PMysqlPagoproveedoresproductionInvoices(Base):
     _airbyte_extracted_at = Column(TIMESTAMP(timezone=True))
     _airbyte_meta = Column(JSON)
     _airbyte_generation_id = Column(Integer)
-    id = Column(Integer)
+    id = Column(Integer, primary_key=True)
     branch = Column(Text)
     number = Column(Text)
     id_comp = Column(Text)
@@ -209,7 +209,7 @@ class PMysqlProductionmotoursReserves(Base):
     _airbyte_meta = Column(JSON)
     _airbyte_generation_id = Column(Integer)
 
-    id = Column(Integer)
+    id = Column(Integer, primary_key=True)
     uuid = Column(Text)
     group = Column(Boolean)
     status = Column(Text)
@@ -347,7 +347,7 @@ class SMysqlProductionmotoursServices(Base):
     _airbyte_meta = Column(JSON)
     _airbyte_generation_id = Column(Integer)
 
-    id = Column(Integer)
+    id = Column(Integer, primary_key=True)
     reserve_id = Column(Integer)
     number = Column(Integer)
     aptour_reserve_id = Column(Integer)
