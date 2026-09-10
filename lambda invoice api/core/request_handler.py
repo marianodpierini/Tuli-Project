@@ -2,7 +2,7 @@ import json
 import boto3
 import os
 from decimal import Decimal
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from urllib.parse import unquote_plus
 
 from sqlalchemy import func, or_
@@ -271,7 +271,61 @@ class RequestHandler:
         query_params = self.event.get("queryStringParameters") or {}
         page_param = query_params.get("page")
         limit_param = query_params.get("limit")
+        created_from_param = query_params.get("created_from")
+        created_to_param = query_params.get("created_to")
         use_pagination = page_param is not None or limit_param is not None
+
+        created_from_date = None
+        created_to_date = None
+
+        if created_from_param:
+            try:
+                created_from_date = date.fromisoformat(created_from_param)
+            except ValueError:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {
+                            "error": "Parametro de fecha invalido",
+                            "details": "created_from debe tener formato YYYY-MM-DD",
+                        }
+                    ),
+                }
+
+        if created_to_param:
+            try:
+                created_to_date = date.fromisoformat(created_to_param)
+            except ValueError:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {
+                            "error": "Parametro de fecha invalido",
+                            "details": "created_to debe tener formato YYYY-MM-DD",
+                        }
+                    ),
+                }
+
+        if created_from_date and created_to_date and created_from_date > created_to_date:
+            return {
+                "statusCode": 400,
+                "body": json.dumps(
+                    {
+                        "error": "Rango de fechas invalido",
+                        "details": "created_from no puede ser mayor que created_to",
+                    }
+                ),
+            }
+
+        created_from_dt = None
+        created_to_exclusive_dt = None
+        if created_from_date:
+            created_from_dt = datetime.combine(created_from_date, datetime.min.time())
+        if created_to_date:
+            created_to_exclusive_dt = datetime.combine(
+                created_to_date + timedelta(days=1),
+                datetime.min.time(),
+            )
 
         page = None
         limit = None
@@ -338,6 +392,14 @@ class RequestHandler:
                 .order_by(InvoicesExtractedEmails.id.desc())
             )
 
+            if created_from_dt is not None:
+                query = query.filter(InvoicesExtractedEmails.created_at >= created_from_dt)
+
+            if created_to_exclusive_dt is not None:
+                query = query.filter(
+                    InvoicesExtractedEmails.created_at < created_to_exclusive_dt
+                )
+
             total_items = None
             total_pages = None
 
@@ -353,8 +415,19 @@ class RequestHandler:
                         InvoiceCases.case_id == InvoiceTransitions.case_id,
                     )
                     .filter(InvoiceCases.state == estado)
-                    .scalar()
-                ) or 0
+                )
+
+                if created_from_dt is not None:
+                    total_items_query = total_items_query.filter(
+                        InvoicesExtractedEmails.created_at >= created_from_dt
+                    )
+
+                if created_to_exclusive_dt is not None:
+                    total_items_query = total_items_query.filter(
+                        InvoicesExtractedEmails.created_at < created_to_exclusive_dt
+                    )
+
+                total_items = total_items_query.scalar() or 0
 
                 total_pages = (total_items + limit - 1) // limit if total_items else 0
                 query = query.offset(offset).limit(limit)
