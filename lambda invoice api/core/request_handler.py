@@ -436,13 +436,13 @@ class RequestHandler:
             items = []
 
             for iee, state, sender, received_at, subject, monto, provincia, id_provincia in results:
-                reservas_por_id = {}
+                reservas_por_id = []
                 for service in iee.services:
-                    reserva_id = service.id_reserva_mo
-                    reservas_por_id[reserva_id] = {
-                        "reserve_id": reserva_id,
-                        "importe": service.importe,
-                    }
+                    reservas_por_id.append({
+                        "service_id": service.id_servicio,
+                        "reserve_id": service.id_reserva_mo,
+                        "amount": service.importe,
+                    })
 
                 monto_default = monto if monto is not None else 0.0
                 provincia_default = provincia if provincia is not None else ""
@@ -488,7 +488,7 @@ class RequestHandler:
                             "province_id": id_provincia_default,
                         }
                     ],
-                    "reservas": list(reservas_por_id.values()),
+                    "reservas": reservas_por_id,
                 }
                 items.append(invoice_item)
 
