@@ -404,7 +404,7 @@ class RequestHandler:
             total_pages = None
 
             if use_pagination:
-                total_items = (
+                total_items_query = (
                     session.query(func.count(func.distinct(InvoicesExtractedEmails.id)))
                     .join(
                         InvoiceCases,
