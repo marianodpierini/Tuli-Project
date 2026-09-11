@@ -71,13 +71,30 @@ class GmailStateRepository:
         response = self.dynamodb_client.get_item(
             TableName=self.table_name_processed, Key={"message_id": {"S": message_id}}
         )
-        return "Item" in response
+        item = response.get("Item")
+        if not item:
+            return False
+        return item.get("state", {}).get("S") == "completed"
 
     def mark_message_processed(self, message_id: str, state: str, total_time_ms: int = 0, total_tokens: int = 0):
         self.dynamodb_client.put_item(
             TableName=self.table_name_processed, Item={"message_id": {"S": message_id}, "state": {"S": state}, "total_time_ms": {"N": str(total_time_ms)}, "total_tokens": {"N": str(total_tokens)}}
         )
         logger.info(f"Mensaje marcado como procesado: {message_id}")
+
+    def mark_message_failed(self, message_id: str, error_message: str):
+        safe_error = (error_message or "")[:1000]
+        self.dynamodb_client.put_item(
+            TableName=self.table_name_processed,
+            Item={
+                "message_id": {"S": message_id},
+                "state": {"S": "failed"},
+                "error": {"S": safe_error},
+                "total_time_ms": {"N": "0"},
+                "total_tokens": {"N": "0"},
+            },
+        )
+        logger.info(f"Mensaje marcado como failed: {message_id}")
 
 
 class PubSubService:
@@ -203,12 +220,15 @@ class InvoiceExtractionOrchestrator:
             self.pubsub_service.ack_messages(ack_ids)
             return
 
+        processed_ok = 0
+        processed_failed = 0
+
         for msg_id in message_ids:
             if self.state_repo.is_message_processed(msg_id):
                 logger.info(f"Mensaje ya procesado: {msg_id}")
                 continue
 
-            self.state_repo.mark_message_processed(msg_id, "in progress")
+            self.state_repo.mark_message_processed(msg_id, "in_progress")
 
             try:
                 raw_email = self.gmail_service.get_raw_email(msg_id)
@@ -221,11 +241,19 @@ class InvoiceExtractionOrchestrator:
                 total_time_email, total_tokens_email = email_processor.process_email()
 
                 self.state_repo.mark_message_processed(msg_id, "completed", total_time_email, total_tokens_email)
+                processed_ok += 1
             except Exception as e:
                 logger.error(f"Error processing message {msg_id}: {e}")
+                self.state_repo.mark_message_failed(msg_id, str(e))
+                processed_failed += 1
 
-        if latest_gmail_history_id:
+        if latest_gmail_history_id and processed_failed == 0:
             self.state_repo.save_history_id(str(latest_gmail_history_id))
+        elif latest_gmail_history_id:
+            logger.warning(
+                "No se avanza last_history_id porque hubo errores en el lote "
+                f"(ok={processed_ok}, failed={processed_failed})."
+            )
 
         ack_ids = [m["ack_id"] for m in messages]
         self.pubsub_service.ack_messages(ack_ids)

@@ -1401,7 +1401,9 @@ class RequestHandler:
             for iee, state, state_reason, case_id, created_at, sender, subject, received_at, id_provincia, provincia, monto in results:
                 invoice_item = {
                     "id_factura": iee.id,
-                    "case_id": case_id,
+                    "case_id": (
+                        str(case_id) if case_id is not None else None
+                    ),
                     "cuit": iee.cuit,
                     "state_reason": state_reason,
                     "created_at": created_at,

@@ -42,6 +42,7 @@ class ReprocessInvoice:
         self.key_operadores = key_operadores
         self.json_parser = JsonParser()
         self.bedrock_client = boto3.client("bedrock-runtime", region_name="us-east-1")
+        self.operadores = self.load_operators()
 
     def load_operators(self) -> Dict[str, Any]:
         self.logger.info(f"Cargando operadores desde s3://{self.s3_bucket}/{self.key_operadores}")
@@ -376,7 +377,7 @@ class ReprocessInvoice:
 
         data_agent = self.extract_invoice_data(file_bytes, model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
-        operadores = self._buscar_operador_por_cuit(data_agent.get("cuit"), operators_file)
+        operadores = self._buscar_operador_por_cuit(data_agent.get("cuit"))
 
         conn_mysql = get_connection()
         conn_mysql.ping(reconnect=True)

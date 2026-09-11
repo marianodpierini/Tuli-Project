@@ -54,7 +54,6 @@ class FacturasState(str, Enum):
 class StateReason(str, Enum):
     CUIT_NO_IDENTIFICADO = "CUIT_NO_IDENTIFICADO"
     CUIT_DUDOSO = "CUIT_DUDOSO"
-    DISTRIBUCION_A_CONFIRMAR = "DISTRIBUCION_A_CONFIRMAR"
     DESGLOCE_NO_CUADRA = "DESGLOCE_NO_CUADRA"
     REMITENTE_NO_COINCIDE = "REMITENTE_NO_COINCIDE"
     EXTENSION_INVALIDA = "EXTENSION_INVALIDA"
@@ -64,6 +63,7 @@ class StateReason(str, Enum):
     FECHA_INVALIDA = "FECHA_INVALIDA"
     YA_FACTURADA = "YA_FACTURADA"
     ERROR_EN_PROCESAMIENTO = "ERROR_EN_PROCESAMIENTO"
+    PARCIALMENTE_FACTURADA = "PARCIALMENTE_FACTURADA"
 
 
 class JsonParser:
@@ -591,7 +591,8 @@ class EmailProcessor:
 
                 old_state = invoice_case.state
                 servicios = data_agent.get("servicios", [])
-                if all(not s.get("ya_facturado") for s in servicios):
+                state_reason = None
+                if all(not s.get("vinculado") for s in servicios):
                     state_invoice = FacturasState.EN_REVISION
                     state_reason = StateReason.SERVICIO_SIN_RESERVA
                 elif any(not s.get("vinculado") for s in servicios):
@@ -600,6 +601,12 @@ class EmailProcessor:
                 elif servicios and all(s.get("ya_facturado") for s in servicios):
                     state_invoice = FacturasState.YA_FACTURADO
                     state_reason = StateReason.YA_FACTURADA
+                elif all(s.get("vinculado") for s in servicios) and (
+                    any(not s.get("ya_facturado") for s in servicios)
+                    and any(s.get("ya_facturado") for s in servicios)
+                ):
+                    state_invoice = FacturasState.EN_REVISION
+                    state_reason = StateReason.PARCIALMENTE_FACTURADA
                 else:
                     state_invoice = FacturasState.LISTO_PARA_CARGAR
 
@@ -609,7 +616,7 @@ class EmailProcessor:
 
                 if self.validar_desglose(data_agent)[0] is False:
                     state_invoice = FacturasState.EN_REVISION
-                    invoice_case.state_reason = StateReason.DESGLOCE_NO_CUADRA
+                    state_reason = StateReason.DESGLOCE_NO_CUADRA
 
                 invoice_case.state = state_invoice
                 invoice_case.state_reason = state_reason
@@ -752,7 +759,7 @@ class EmailProcessor:
                     from_state=FacturasState.RECIBIDO,
                     to_state=FacturasState.ERROR,
                     reason="Validación de servicios y vinculación.",
-                    metadata_={error_reason},
+                    metadata_={"error": error_reason},
                     actor="System/Validator",
                 )
 
