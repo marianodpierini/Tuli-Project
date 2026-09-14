@@ -185,6 +185,7 @@ class PdfBedrockExtractor:
                 "descuento": 0.0,
                 "total_sin_iva": 0.0,
                 "iva_21": 0.0,
+                "iva_105": 0.0,
                 "percepcion_iibb_texto": "",
                 "percepcion_iibb": 0.0,
                 "no_computable": 0.0,
@@ -356,6 +357,8 @@ class EmailProcessor:
         percepcion_iibb = _to_float(factura.get("percepcion_iibb"))
         percepcion_iva = _to_float(factura.get("percepcion_iva"))
         importe_total_final = _to_float(factura.get("importe_total_final"))
+        iva_105 = _to_float(factura.get("iva_105"))
+        iva_21 = _to_float(factura.get("iva_21"))
 
         checks = [
             (
@@ -372,6 +375,8 @@ class EmailProcessor:
                     total_sin_iva
                     + percepcion_iibb
                     + percepcion_iva
+                    + iva_105
+                    + iva_21
                     - importe_total_final
                 )
                 > TOLERANCIA,
