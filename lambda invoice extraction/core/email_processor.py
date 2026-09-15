@@ -635,6 +635,14 @@ class EmailProcessor:
                     actor="System/Validator",
                 )
 
+                def _as_float_or_zero(value: Any) -> float:
+                    if value is None:
+                        return 0.0
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        return 0.0
+
                 tipo_factura = (
                     "FA"
                     if data_agent.get("tipo_factura") == "factura A"
@@ -671,11 +679,11 @@ class EmailProcessor:
                     punto_venta=punto_venta,
                     numero_comprobante=numero_comprobante,
                     cotizacion=data_agent.get("cotizacion"),
-                    exento=data_agent.get("total_sin_iva"),
-                    no_computable=data_agent.get("no_computable"),
-                    gravado_21=data_agent.get("gravado_21"),
-                    gravado_105=data_agent.get("gravado_105"),
-                    percepcion_iva=data_agent.get("percepcion_iva"),
+                    exento=_as_float_or_zero(data_agent.get("total_sin_iva")),
+                    no_computable=_as_float_or_zero(data_agent.get("no_computable")),
+                    gravado_21=_as_float_or_zero(data_agent.get("gravado_21")),
+                    gravado_105=_as_float_or_zero(data_agent.get("gravado_105")),
+                    percepcion_iva=_as_float_or_zero(data_agent.get("percepcion_iva")),
                     subtotal_control=data_agent.get("subtotal"),
                     descuento_control=data_agent.get("descuento"),
                     total_sin_iva_control=data_agent.get("total_sin_iva"),
