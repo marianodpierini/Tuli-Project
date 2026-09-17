@@ -645,13 +645,13 @@ class EmailProcessor:
 
                 tipo_factura = (
                     "FA"
-                    if data_agent.get("tipo_factura") == "factura A"
+                    if data_agent.get("tipo_factura").strip().lower() == "factura a"
                     else (
                         "FB"
-                        if data_agent.get("tipo_factura") == "factura B"
+                        if data_agent.get("tipo_factura").strip().lower() == "factura b"
                         else (
                             "FC"
-                            if data_agent.get("tipo_factura") == "factura C"
+                            if data_agent.get("tipo_factura").strip().lower() == "factura c"
                             else None
                         )
                     )

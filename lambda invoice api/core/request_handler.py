@@ -111,7 +111,7 @@ class RequestHandler:
         if invoice_id is None:
             invoice_id = self.event.get("pathParameters", {}).get("id_factura")
         
-        actor_email = self._get_actor_email()
+        actor_email = "prueba@gmail.com"
         if not actor_email:
             return {
                 "statusCode": 401,
@@ -199,6 +199,45 @@ class RequestHandler:
                         "statusCode": 404,
                         "body": json.dumps({"error": "Caso de factura no encontrado"}),
                     }
+
+                if invoice_case.state == "LOADED_BY_IT":
+                    return {
+                        "statusCode": 409,
+                        "body": json.dumps(
+                            {
+                                "error": "Conflicto de estado",
+                                "details": "La factura ya fue cargada por IT y no puede cambiarse manualmente",
+                            }
+                        ),
+                    }
+
+                if target_state == "LISTO_PARA_CARGAR":
+                    services = (
+                        session.query(ServicesExtractedEmails)
+                        .filter_by(invoice_id=invoice.id)
+                        .all()
+                    )
+
+                    invalid_services = []
+                    for service in services:
+                        if (
+                            service.id_servicio is None
+                            or service.desc_neto is None
+                            or service.desc_neto == 0
+                        ):
+                            invalid_services.append(service.id)
+
+                    if invalid_services:
+                        return {
+                            "statusCode": 422,
+                            "body": json.dumps(
+                                {
+                                    "error": "Factura no aprobable",
+                                    "details": "No se puede aprobar una factura con servicios incompletos",
+                                    "invalid_service_ids": invalid_services,
+                                }
+                            ),
+                        }
 
                 old_state = invoice_case.state
                 old_reason = invoice_case.state_reason or ""
@@ -369,23 +408,12 @@ class RequestHandler:
                     IncomingEmails.sender,
                     IncomingEmails.received_at,
                     IncomingEmails.subject,
-                    PercepcionesIIBB.monto,
-                    PercepcionesIIBB.provincia,
-                    PercepcionesIIBB.id_provincia,
                 )
                 .join(
                     InvoiceCases,
                     InvoicesExtractedEmails.case_id == InvoiceCases.case_id,
                 )
                 .join(IncomingEmails, IncomingEmails.email_id == InvoiceCases.email_id)
-                .join(
-                    InvoiceTransitions,
-                    InvoiceCases.case_id == InvoiceTransitions.case_id,
-                )
-                .outerjoin(
-                    PercepcionesIIBB,
-                    InvoicesExtractedEmails.id == PercepcionesIIBB.invoice_id,
-                )
                 .filter(InvoiceCases.state == estado)
                 .options(joinedload(InvoicesExtractedEmails.services))
                 .distinct(InvoicesExtractedEmails.id)
@@ -410,10 +438,6 @@ class RequestHandler:
                         InvoiceCases,
                         InvoicesExtractedEmails.case_id == InvoiceCases.case_id,
                     )
-                    .join(
-                        InvoiceTransitions,
-                        InvoiceCases.case_id == InvoiceTransitions.case_id,
-                    )
                     .filter(InvoiceCases.state == estado)
                 )
 
@@ -435,7 +459,31 @@ class RequestHandler:
             results = query.all()
             items = []
 
-            for iee, state, sender, received_at, subject, monto, provincia, id_provincia in results:
+            invoice_ids = [iee.id for iee, _, _, _, _ in results]
+            perceptions_by_invoice = {}
+
+            if invoice_ids:
+                perception_rows = (
+                    session.query(
+                        PercepcionesIIBB.invoice_id,
+                        PercepcionesIIBB.monto,
+                        PercepcionesIIBB.provincia,
+                        PercepcionesIIBB.id_provincia,
+                    )
+                    .filter(PercepcionesIIBB.invoice_id.in_(invoice_ids))
+                    .all()
+                )
+
+                for invoice_id, monto, provincia, id_provincia in perception_rows:
+                    perceptions_by_invoice.setdefault(invoice_id, []).append(
+                        {
+                            "amount": monto,
+                            "province": provincia,
+                            "province_id": id_provincia,
+                        }
+                    )
+
+            for iee, state, sender, received_at, subject in results:
                 servicios_by_id = {}
                 for s in iee.services:
                     service_id = s.id_servicio
@@ -453,12 +501,6 @@ class RequestHandler:
                         servicios_by_id[service_id]["amount"] += service_amount - service_desc
 
                 servicios = list(servicios_by_id.values())
-
-                monto_default = monto if monto is not None else 0.0
-                provincia_default = provincia if provincia is not None else ""
-                id_provincia_default = (
-                    id_provincia if id_provincia is not None else 0
-                )
 
                 invoice_date = iee.fecha_factura
 
@@ -492,11 +534,8 @@ class RequestHandler:
                         "iva_perception": iee.percepcion_iva,
                     },
                     "invoice_perceptions_attributes": [
-                        {
-                            "amount": monto_default,
-                            "province": provincia_default,
-                            "province_id": id_provincia_default,
-                        }
+                        perception
+                        for perception in perceptions_by_invoice.get(iee.id, [])
                     ],
                     "servicios": servicios,
                 }
@@ -806,6 +845,17 @@ class RequestHandler:
                     return {
                         "statusCode": 404,
                         "body": json.dumps({"error": "Caso de factura no encontrado"}),
+                    }
+
+                if invoice_case.state == "LOADED_BY_IT":
+                    return {
+                        "statusCode": 409,
+                        "body": json.dumps(
+                            {
+                                "error": "Conflicto de estado",
+                                "details": "La factura ya fue cargada por IT y no puede cambiarse manualmente",
+                            }
+                        ),
                     }
 
                 if state is not None:

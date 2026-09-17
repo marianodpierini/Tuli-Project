@@ -142,7 +142,8 @@ class InvoicesValidation:
                         PMysqlPagoproveedoresproductionInvoices.number.label("number"),
                     )
                     .filter(
-                        PMysqlPagoproveedoresproductionInvoices.reserve_id.in_(reserve_ids_validos)
+                        PMysqlPagoproveedoresproductionInvoices.reserve_id.in_(reserve_ids_validos),
+                        PMysqlPagoproveedoresproductionInvoices.operator_aptour_id.in_(self.operator_ids)
                     )
                     .all()
                 )
