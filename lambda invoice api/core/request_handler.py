@@ -480,11 +480,21 @@ class RequestHandler:
                             "amount": monto,
                             "province": provincia,
                             "province_id": id_provincia,
+                            "perception_type": 'iibb',
                         }
                     )
 
             for iee, state, sender, received_at, subject in results:
                 servicios_by_id = {}
+                if iee.percepcion_iva is not None and iee.percepcion_iva != 0:
+                    perceptions_by_invoice.setdefault(iee.id, []).append(
+                        {
+                            "amount": iee.percepcion_iva,
+                            "province": None,
+                            "province_id": None,
+                            "perception_type": 'iva',
+                        }
+                    )
                 for s in iee.services:
                     service_id = s.id_servicio
                     if service_id not in servicios_by_id:
@@ -521,7 +531,7 @@ class RequestHandler:
                     "invoice_date": invoice_date,
                     "month": invoice_date.month if invoice_date else None,
                     "year": invoice_date.year if invoice_date else None,
-                    "currency": iee.moneda,
+                    "currency": iee.moneda.lower(),
                     "cotization": iee.cotizacion,
                     "total": iee.importe_total,
                     "cost_center_one": "Aero B",
@@ -531,7 +541,6 @@ class RequestHandler:
                         "not_computable": iee.no_computable,
                         "taxable_21": iee.gravado_21,
                         "taxable_10_5": iee.gravado_105,
-                        "iva_perception": iee.percepcion_iva,
                     },
                     "invoice_perceptions_attributes": [
                         perception

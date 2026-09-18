@@ -178,7 +178,7 @@ class PdfBedrockExtractor:
                 "fecha": "YYYY-MM-DD",
                 "moneda": "",
                 "importe_total_final": 0.0,
-                "tipo_comprobante": "factura|nota de debito|nota de credito",
+                "tipo_comprobante": "invoice|debit_note|credit_note",
                 "tipo_factura": "factura A|factura B|factura C|null",
                 "cotizacion": 0.0,
                 "subtotal": 0.0,
