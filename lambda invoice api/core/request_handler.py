@@ -312,7 +312,34 @@ class RequestHandler:
         limit_param = query_params.get("limit")
         created_from_param = query_params.get("created_from")
         created_to_param = query_params.get("created_to")
+        invoice_ids_param = query_params.get("invoice_ids")
+        if invoice_ids_param is None:
+            invoice_ids_param = query_params.get("ids")
+        if invoice_ids_param is None:
+            invoice_ids_param = query_params.get("id_facturas")
         use_pagination = page_param is not None or limit_param is not None
+
+        requested_invoice_ids = None
+        if invoice_ids_param:
+            try:
+                requested_invoice_ids = [
+                    int(invoice_id.strip())
+                    for invoice_id in invoice_ids_param.split(",")
+                    if invoice_id and invoice_id.strip()
+                ]
+            except ValueError:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps(
+                        {
+                            "error": "Parametro invalido",
+                            "details": "invoice_ids debe ser una lista de IDs numericos separada por coma",
+                        }
+                    ),
+                }
+
+            if not requested_invoice_ids:
+                requested_invoice_ids = None
 
         created_from_date = None
         created_to_date = None
@@ -428,6 +455,9 @@ class RequestHandler:
                     InvoicesExtractedEmails.created_at < created_to_exclusive_dt
                 )
 
+            if requested_invoice_ids is not None:
+                query = query.filter(InvoicesExtractedEmails.id.in_(requested_invoice_ids))
+
             total_items = None
             total_pages = None
 
@@ -449,6 +479,11 @@ class RequestHandler:
                 if created_to_exclusive_dt is not None:
                     total_items_query = total_items_query.filter(
                         InvoicesExtractedEmails.created_at < created_to_exclusive_dt
+                    )
+
+                if requested_invoice_ids is not None:
+                    total_items_query = total_items_query.filter(
+                        InvoicesExtractedEmails.id.in_(requested_invoice_ids)
                     )
 
                 total_items = total_items_query.scalar() or 0
@@ -514,6 +549,17 @@ class RequestHandler:
 
                 invoice_date = iee.fecha_factura
 
+                s3_key = iee.s3_key
+                
+                url = s3_client.generate_presigned_url(
+                    ClientMethod="get_object",
+                    Params={
+                        "Bucket": BUCKET_NAME,
+                        "Key": s3_key,
+                    },
+                    ExpiresIn=300,  # 5 minutos
+                )
+
                 invoice_item = {
                     "id_factura": iee.id,
                     "cuit": iee.cuit,
@@ -536,6 +582,7 @@ class RequestHandler:
                     "total": iee.importe_total,
                     "cost_center_one": "Aero B",
                     "cost_center_two": "Tours",
+                    "invoice_url": url,
                     "invoice_amount_attributes": {
                         "exempt": iee.exento,
                         "not_computable": iee.no_computable,
@@ -1226,8 +1273,6 @@ class RequestHandler:
                 },
                 ExpiresIn=300,  # 5 minutos
             )
-
-            print(url)
 
             return {"statusCode": 200, "body": json.dumps({"pdf_url": url})}
         except Exception as e:
