@@ -580,8 +580,8 @@ class RequestHandler:
                     "currency": iee.moneda.lower(),
                     "cotization": iee.cotizacion,
                     "total": iee.importe_total,
-                    "cost_center_one": "Aero B",
-                    "cost_center_two": "Tours",
+                    "cost_center_one": "Tours",
+                    "cost_center_two": "Aero B",
                     "invoice_url": url,
                     "invoice_amount_attributes": {
                         "exempt": iee.exento,
